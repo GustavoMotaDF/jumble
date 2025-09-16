@@ -1,6 +1,6 @@
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { TNip66RelayInfo } from '@/types'
+import { TRelayInfo } from '@/types'
 import { HTMLProps } from 'react'
 import { useTranslation } from 'react-i18next'
 import RelayBadges from '../RelayBadges'
@@ -10,11 +10,13 @@ import { SimpleUserAvatar } from '../UserAvatar'
 
 export default function RelaySimpleInfo({
   relayInfo,
+  users,
   hideBadge = false,
   className,
   ...props
 }: HTMLProps<HTMLDivElement> & {
-  relayInfo?: TNip66RelayInfo & { users?: string[] }
+  relayInfo?: TRelayInfo
+  users?: string[]
   hideBadge?: boolean
 }) {
   const { t } = useTranslation()
@@ -34,17 +36,17 @@ export default function RelaySimpleInfo({
         {relayInfo && <SaveRelayDropdownMenu urls={[relayInfo.url]} />}
       </div>
       {!hideBadge && relayInfo && <RelayBadges relayInfo={relayInfo} />}
-      {!!relayInfo?.description && <div className="line-clamp-4">{relayInfo.description}</div>}
-      {!!relayInfo?.users?.length && (
+      {!!relayInfo?.description && <div className="line-clamp-3">{relayInfo.description}</div>}
+      {!!users?.length && (
         <div className="flex items-center gap-2">
           <div className="text-muted-foreground">{t('Favorited by')} </div>
           <div className="flex items-center gap-1">
-            {relayInfo.users.slice(0, 10).map((user) => (
+            {users.slice(0, 10).map((user) => (
               <SimpleUserAvatar key={user} userId={user} size="xSmall" />
             ))}
-            {relayInfo.users.length > 10 && (
+            {users.length > 10 && (
               <div className="text-muted-foreground text-xs rounded-full bg-muted w-5 h-5 flex items-center justify-center">
-                +{relayInfo.users.length - 10}
+                +{users.length - 10}
               </div>
             )}
           </div>
@@ -54,9 +56,9 @@ export default function RelaySimpleInfo({
   )
 }
 
-export function RelaySimpleInfoSkeleton() {
+export function RelaySimpleInfoSkeleton({ className }: { className?: string }) {
   return (
-    <div className="p-4 space-y-2">
+    <div className={cn('space-y-1', className)}>
       <div className="flex items-center gap-2 w-full">
         <Skeleton className="h-9 w-9 rounded-full" />
         <div className="flex-1 w-0 space-y-1">

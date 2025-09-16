@@ -1,13 +1,24 @@
-import { DEFAULT_NIP_96_SERVICE, StorageKey } from '@/constants'
+import {
+  DEFAULT_NIP_96_SERVICE,
+  ExtendedKind,
+  MEDIA_AUTO_LOAD_POLICY,
+  NOTIFICATION_LIST_STYLE,
+  SUPPORTED_KINDS,
+  StorageKey
+} from '@/constants'
 import { isSameAccount } from '@/lib/account'
 import { randomString } from '@/lib/random'
 import {
   TAccount,
   TAccountPointer,
   TFeedInfo,
+  TMediaAutoLoadPolicy,
+  TMediaUploadServiceConfig,
   TNoteListMode,
+  TNotificationStyle,
   TRelaySet,
-  TThemeSetting
+  TThemeSetting,
+  TTranslationServiceConfig
 } from '@/types'
 
 class LocalStorageService {
@@ -24,6 +35,18 @@ class LocalStorageService {
   private quickZap: boolean = false
   private accountFeedInfoMap: Record<string, TFeedInfo | undefined> = {}
   private mediaUploadService: string = DEFAULT_NIP_96_SERVICE
+  private autoplay: boolean = true
+  private hideUntrustedInteractions: boolean = false
+  private hideUntrustedNotifications: boolean = false
+  private hideUntrustedNotes: boolean = false
+  private translationServiceConfigMap: Record<string, TTranslationServiceConfig> = {}
+  private mediaUploadServiceConfigMap: Record<string, TMediaUploadServiceConfig> = {}
+  private defaultShowNsfw: boolean = false
+  private dismissedTooManyRelaysAlert: boolean = false
+  private showKinds: number[] = []
+  private hideContentMentioningMutedUsers: boolean = false
+  private notificationListStyle: TNotificationStyle = NOTIFICATION_LIST_STYLE.DETAILED
+  private mediaAutoLoadPolicy: TMediaAutoLoadPolicy = MEDIA_AUTO_LOAD_POLICY.ALWAYS
 
   constructor() {
     if (!LocalStorageService.instance) {
@@ -86,8 +109,81 @@ class LocalStorageService {
       window.localStorage.getItem(StorageKey.ACCOUNT_FEED_INFO_MAP) ?? '{}'
     this.accountFeedInfoMap = JSON.parse(accountFeedInfoMapStr)
 
+    // deprecated
     this.mediaUploadService =
       window.localStorage.getItem(StorageKey.MEDIA_UPLOAD_SERVICE) ?? DEFAULT_NIP_96_SERVICE
+
+    this.autoplay = window.localStorage.getItem(StorageKey.AUTOPLAY) !== 'false'
+
+    const hideUntrustedEvents =
+      window.localStorage.getItem(StorageKey.HIDE_UNTRUSTED_EVENTS) === 'true'
+    const storedHideUntrustedInteractions = window.localStorage.getItem(
+      StorageKey.HIDE_UNTRUSTED_INTERACTIONS
+    )
+    const storedHideUntrustedNotifications = window.localStorage.getItem(
+      StorageKey.HIDE_UNTRUSTED_NOTIFICATIONS
+    )
+    const storedHideUntrustedNotes = window.localStorage.getItem(StorageKey.HIDE_UNTRUSTED_NOTES)
+    this.hideUntrustedInteractions = storedHideUntrustedInteractions
+      ? storedHideUntrustedInteractions === 'true'
+      : hideUntrustedEvents
+    this.hideUntrustedNotifications = storedHideUntrustedNotifications
+      ? storedHideUntrustedNotifications === 'true'
+      : hideUntrustedEvents
+    this.hideUntrustedNotes = storedHideUntrustedNotes
+      ? storedHideUntrustedNotes === 'true'
+      : hideUntrustedEvents
+
+    const translationServiceConfigMapStr = window.localStorage.getItem(
+      StorageKey.TRANSLATION_SERVICE_CONFIG_MAP
+    )
+    if (translationServiceConfigMapStr) {
+      this.translationServiceConfigMap = JSON.parse(translationServiceConfigMapStr)
+    }
+
+    const mediaUploadServiceConfigMapStr = window.localStorage.getItem(
+      StorageKey.MEDIA_UPLOAD_SERVICE_CONFIG_MAP
+    )
+    if (mediaUploadServiceConfigMapStr) {
+      this.mediaUploadServiceConfigMap = JSON.parse(mediaUploadServiceConfigMapStr)
+    }
+
+    this.defaultShowNsfw = window.localStorage.getItem(StorageKey.DEFAULT_SHOW_NSFW) === 'true'
+
+    this.dismissedTooManyRelaysAlert =
+      window.localStorage.getItem(StorageKey.DISMISSED_TOO_MANY_RELAYS_ALERT) === 'true'
+
+    const showKindsStr = window.localStorage.getItem(StorageKey.SHOW_KINDS)
+    if (!showKindsStr) {
+      this.showKinds = SUPPORTED_KINDS
+    } else {
+      const showKindsVersionStr = window.localStorage.getItem(StorageKey.SHOW_KINDS_VERSION)
+      const showKindsVersion = showKindsVersionStr ? parseInt(showKindsVersionStr) : 0
+      const showKinds = JSON.parse(showKindsStr) as number[]
+      if (showKindsVersion < 1) {
+        showKinds.push(ExtendedKind.VIDEO, ExtendedKind.SHORT_VIDEO)
+      }
+      this.showKinds = showKinds
+    }
+    window.localStorage.setItem(StorageKey.SHOW_KINDS, JSON.stringify(this.showKinds))
+    window.localStorage.setItem(StorageKey.SHOW_KINDS_VERSION, '1')
+
+    this.hideContentMentioningMutedUsers =
+      window.localStorage.getItem(StorageKey.HIDE_CONTENT_MENTIONING_MUTED_USERS) === 'true'
+
+    this.notificationListStyle =
+      window.localStorage.getItem(StorageKey.NOTIFICATION_LIST_STYLE) ===
+      NOTIFICATION_LIST_STYLE.COMPACT
+        ? NOTIFICATION_LIST_STYLE.COMPACT
+        : NOTIFICATION_LIST_STYLE.DETAILED
+
+    const mediaAutoLoadPolicy = window.localStorage.getItem(StorageKey.MEDIA_AUTO_LOAD_POLICY)
+    if (
+      mediaAutoLoadPolicy &&
+      Object.values(MEDIA_AUTO_LOAD_POLICY).includes(mediaAutoLoadPolicy as TMediaAutoLoadPolicy)
+    ) {
+      this.mediaAutoLoadPolicy = mediaAutoLoadPolicy as TMediaAutoLoadPolicy
+    }
 
     // Clean up deprecated data
     window.localStorage.removeItem(StorageKey.ACCOUNT_PROFILE_EVENT_MAP)
@@ -151,17 +247,20 @@ class LocalStorageService {
   }
 
   addAccount(account: TAccount) {
-    if (this.accounts.find((act) => isSameAccount(act, account))) {
-      return
+    const index = this.accounts.findIndex((act) => isSameAccount(act, account))
+    if (index !== -1) {
+      this.accounts[index] = account
+    } else {
+      this.accounts.push(account)
     }
-    this.accounts.push(account)
     window.localStorage.setItem(StorageKey.ACCOUNTS, JSON.stringify(this.accounts))
-    return account
+    return this.accounts
   }
 
   removeAccount(account: TAccount) {
     this.accounts = this.accounts.filter((act) => !isSameAccount(act, account))
     window.localStorage.setItem(StorageKey.ACCOUNTS, JSON.stringify(this.accounts))
+    return this.accounts
   }
 
   switchAccount(account: TAccount | null) {
@@ -227,13 +326,132 @@ class LocalStorageService {
     )
   }
 
-  getMediaUploadService() {
-    return this.mediaUploadService
+  getAutoplay() {
+    return this.autoplay
   }
 
-  setMediaUploadService(service: string) {
-    this.mediaUploadService = service
-    window.localStorage.setItem(StorageKey.MEDIA_UPLOAD_SERVICE, service)
+  setAutoplay(autoplay: boolean) {
+    this.autoplay = autoplay
+    window.localStorage.setItem(StorageKey.AUTOPLAY, autoplay.toString())
+  }
+
+  getHideUntrustedInteractions() {
+    return this.hideUntrustedInteractions
+  }
+
+  setHideUntrustedInteractions(hideUntrustedInteractions: boolean) {
+    this.hideUntrustedInteractions = hideUntrustedInteractions
+    window.localStorage.setItem(
+      StorageKey.HIDE_UNTRUSTED_INTERACTIONS,
+      hideUntrustedInteractions.toString()
+    )
+  }
+
+  getHideUntrustedNotifications() {
+    return this.hideUntrustedNotifications
+  }
+
+  setHideUntrustedNotifications(hideUntrustedNotifications: boolean) {
+    this.hideUntrustedNotifications = hideUntrustedNotifications
+    window.localStorage.setItem(
+      StorageKey.HIDE_UNTRUSTED_NOTIFICATIONS,
+      hideUntrustedNotifications.toString()
+    )
+  }
+
+  getHideUntrustedNotes() {
+    return this.hideUntrustedNotes
+  }
+
+  setHideUntrustedNotes(hideUntrustedNotes: boolean) {
+    this.hideUntrustedNotes = hideUntrustedNotes
+    window.localStorage.setItem(StorageKey.HIDE_UNTRUSTED_NOTES, hideUntrustedNotes.toString())
+  }
+
+  getTranslationServiceConfig(pubkey?: string | null) {
+    return this.translationServiceConfigMap[pubkey ?? '_'] ?? { service: 'jumble' }
+  }
+
+  setTranslationServiceConfig(config: TTranslationServiceConfig, pubkey?: string | null) {
+    this.translationServiceConfigMap[pubkey ?? '_'] = config
+    window.localStorage.setItem(
+      StorageKey.TRANSLATION_SERVICE_CONFIG_MAP,
+      JSON.stringify(this.translationServiceConfigMap)
+    )
+  }
+
+  getMediaUploadServiceConfig(pubkey?: string | null): TMediaUploadServiceConfig {
+    const defaultConfig = { type: 'nip96', service: this.mediaUploadService } as const
+    if (!pubkey) {
+      return defaultConfig
+    }
+    return this.mediaUploadServiceConfigMap[pubkey] ?? defaultConfig
+  }
+
+  setMediaUploadServiceConfig(
+    pubkey: string,
+    config: TMediaUploadServiceConfig
+  ): TMediaUploadServiceConfig {
+    this.mediaUploadServiceConfigMap[pubkey] = config
+    window.localStorage.setItem(
+      StorageKey.MEDIA_UPLOAD_SERVICE_CONFIG_MAP,
+      JSON.stringify(this.mediaUploadServiceConfigMap)
+    )
+    return config
+  }
+
+  getDefaultShowNsfw() {
+    return this.defaultShowNsfw
+  }
+
+  setDefaultShowNsfw(defaultShowNsfw: boolean) {
+    this.defaultShowNsfw = defaultShowNsfw
+    window.localStorage.setItem(StorageKey.DEFAULT_SHOW_NSFW, defaultShowNsfw.toString())
+  }
+
+  getDismissedTooManyRelaysAlert() {
+    return this.dismissedTooManyRelaysAlert
+  }
+
+  setDismissedTooManyRelaysAlert(dismissed: boolean) {
+    this.dismissedTooManyRelaysAlert = dismissed
+    window.localStorage.setItem(StorageKey.DISMISSED_TOO_MANY_RELAYS_ALERT, dismissed.toString())
+  }
+
+  getShowKinds() {
+    return this.showKinds
+  }
+
+  setShowKinds(kinds: number[]) {
+    this.showKinds = kinds
+    window.localStorage.setItem(StorageKey.SHOW_KINDS, JSON.stringify(kinds))
+  }
+
+  getHideContentMentioningMutedUsers() {
+    return this.hideContentMentioningMutedUsers
+  }
+
+  setHideContentMentioningMutedUsers(hide: boolean) {
+    this.hideContentMentioningMutedUsers = hide
+    window.localStorage.setItem(StorageKey.HIDE_CONTENT_MENTIONING_MUTED_USERS, hide.toString())
+  }
+
+  getNotificationListStyle() {
+    return this.notificationListStyle
+  }
+
+  setNotificationListStyle(style: TNotificationStyle) {
+    this.notificationListStyle = style
+    window.localStorage.setItem(StorageKey.NOTIFICATION_LIST_STYLE, style)
+  }
+
+  getMediaAutoLoadPolicy() {
+    return this.mediaAutoLoadPolicy
+  }
+
+  setMediaAutoLoadPolicy(policy: TMediaAutoLoadPolicy) {
+    this.mediaAutoLoadPolicy = policy
+    window.localStorage.setItem(StorageKey.MEDIA_AUTO_LOAD_POLICY, policy)
   }
 }
 

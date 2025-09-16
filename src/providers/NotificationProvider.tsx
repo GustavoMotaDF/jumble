@@ -1,15 +1,22 @@
 import { BIG_RELAY_URLS, ExtendedKind } from '@/constants'
+import { compareEvents } from '@/lib/event'
+import { notificationFilter } from '@/lib/notification'
+import { usePrimaryPage } from '@/PageManager'
 import client from '@/services/client.service'
-import { kinds } from 'nostr-tools'
+import storage from '@/services/local-storage.service'
+import { kinds, NostrEvent } from 'nostr-tools'
 import { SubCloser } from 'nostr-tools/abstract-pool'
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { useContentPolicy } from './ContentPolicyProvider'
 import { useMuteList } from './MuteListProvider'
 import { useNostr } from './NostrProvider'
+import { useUserTrust } from './UserTrustProvider'
 
 type TNotificationContext = {
   hasNewNotification: boolean
   getNotificationsSeenAt: () => number
-  clearNewNotifications: () => Promise<void>
+  isNotificationRead: (id: string) => boolean
+  markNotificationAsRead: (id: string) => void
 }
 
 const NotificationContext = createContext<TNotificationContext | undefined>(undefined)
@@ -23,46 +30,114 @@ export const useNotification = () => {
 }
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
+  const { current } = usePrimaryPage()
+  const active = useMemo(() => current === 'notifications', [current])
   const { pubkey, notificationsSeenAt, updateNotificationsSeenAt } = useNostr()
-  const { mutePubkeys } = useMuteList()
-  const [newNotificationIds, setNewNotificationIds] = useState(new Set<string>())
-  const subCloserRef = useRef<SubCloser | null>(null)
+  const { hideUntrustedNotifications, isUserTrusted } = useUserTrust()
+  const { mutePubkeySet } = useMuteList()
+  const { hideContentMentioningMutedUsers } = useContentPolicy()
+  const [newNotifications, setNewNotifications] = useState<NostrEvent[]>([])
+  const [readNotificationIdSet, setReadNotificationIdSet] = useState<Set<string>>(new Set())
+  const filteredNewNotifications = useMemo(() => {
+    if (active || notificationsSeenAt < 0) {
+      return []
+    }
+    const filtered: NostrEvent[] = []
+    for (const notification of newNotifications) {
+      if (notification.created_at <= notificationsSeenAt || filtered.length >= 10) {
+        break
+      }
+      if (
+        !notificationFilter(notification, {
+          pubkey,
+          mutePubkeySet,
+          hideContentMentioningMutedUsers,
+          hideUntrustedNotifications,
+          isUserTrusted
+        })
+      ) {
+        continue
+      }
+      filtered.push(notification)
+    }
+    return filtered
+  }, [
+    newNotifications,
+    notificationsSeenAt,
+    mutePubkeySet,
+    hideContentMentioningMutedUsers,
+    hideUntrustedNotifications,
+    isUserTrusted,
+    active
+  ])
 
   useEffect(() => {
-    if (!pubkey || notificationsSeenAt < 0) return
+    setNewNotifications([])
+    updateNotificationsSeenAt(!active)
+  }, [active])
 
-    setNewNotificationIds(new Set())
+  useEffect(() => {
+    if (!pubkey) return
+
+    setNewNotifications([])
+    setReadNotificationIdSet(new Set())
 
     // Track if component is mounted
     const isMountedRef = { current: true }
+    const subCloserRef: {
+      current: SubCloser | null
+    } = { current: null }
 
     const subscribe = async () => {
+      if (subCloserRef.current) {
+        subCloserRef.current.close()
+        subCloserRef.current = null
+      }
       if (!isMountedRef.current) return null
 
       try {
+        let eosed = false
         const relayList = await client.fetchRelayList(pubkey)
-        const relayUrls = relayList.read.concat(BIG_RELAY_URLS).slice(0, 4)
         const subCloser = client.subscribe(
-          relayUrls,
+          relayList.read.length > 0 ? relayList.read.slice(0, 5) : BIG_RELAY_URLS,
           [
             {
               kinds: [
                 kinds.ShortTextNote,
-                ExtendedKind.COMMENT,
-                kinds.Reaction,
                 kinds.Repost,
-                kinds.Zap
+                kinds.Reaction,
+                kinds.Zap,
+                ExtendedKind.COMMENT,
+                ExtendedKind.POLL_RESPONSE,
+                ExtendedKind.VOICE_COMMENT,
+                ExtendedKind.POLL
               ],
               '#p': [pubkey],
-              since: notificationsSeenAt,
               limit: 20
             }
           ],
           {
+            oneose: (e) => {
+              if (e) {
+                eosed = e
+                setNewNotifications((prev) => {
+                  return [...prev.sort((a, b) => compareEvents(b, a))]
+                })
+              }
+            },
             onevent: (evt) => {
-              // Only show notification if not from self and not muted
-              if (evt.pubkey !== pubkey && !mutePubkeys.includes(evt.pubkey)) {
-                setNewNotificationIds((prev) => new Set([...prev, evt.id]))
+              if (evt.pubkey !== pubkey) {
+                setNewNotifications((prev) => {
+                  if (!eosed) {
+                    return [evt, ...prev]
+                  }
+                  if (prev.length && compareEvents(prev[0], evt) >= 0) {
+                    return prev
+                  }
+
+                  client.emitNewEvent(evt)
+                  return [evt, ...prev]
+                })
               }
             },
             onclose: (reasons) => {
@@ -71,7 +146,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
               }
 
               // Only reconnect if still mounted and not a manual close
-              if (isMountedRef.current && subCloserRef.current) {
+              if (isMountedRef.current) {
                 setTimeout(() => {
                   if (isMountedRef.current) {
                     subscribe()
@@ -110,41 +185,74 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         subCloserRef.current = null
       }
     }
-  }, [notificationsSeenAt, pubkey])
+  }, [pubkey])
 
   useEffect(() => {
-    if (newNotificationIds.size >= 10 && subCloserRef.current) {
-      subCloserRef.current.close()
-      subCloserRef.current = null
-    }
-  }, [newNotificationIds])
+    const newNotificationCount = filteredNewNotifications.length
 
-  useEffect(() => {
-    const newNotificationCount = newNotificationIds.size
+    // Update title
     if (newNotificationCount > 0) {
       document.title = `(${newNotificationCount >= 10 ? '9+' : newNotificationCount}) Jumble`
     } else {
       document.title = 'Jumble'
     }
-  }, [newNotificationIds])
+
+    // Update favicons
+    const favicons = document.querySelectorAll<HTMLLinkElement>("link[rel*='icon']")
+    if (!favicons.length) return
+
+    if (newNotificationCount === 0) {
+      favicons.forEach((favicon) => {
+        favicon.href = '/favicon.ico'
+      })
+    } else {
+      const img = document.createElement('img')
+      img.src = '/favicon.ico'
+      img.onload = () => {
+        const size = Math.max(img.width, img.height, 32)
+        const canvas = document.createElement('canvas')
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0, size, size)
+        const r = size * 0.16
+        ctx.beginPath()
+        ctx.arc(size - r - 6, r + 6, r, 0, 2 * Math.PI)
+        ctx.fillStyle = '#FF0000'
+        ctx.fill()
+        favicons.forEach((favicon) => {
+          favicon.href = canvas.toDataURL('image/png')
+        })
+      }
+    }
+  }, [filteredNewNotifications])
 
   const getNotificationsSeenAt = () => {
-    return notificationsSeenAt
+    if (notificationsSeenAt >= 0) {
+      return notificationsSeenAt
+    }
+    if (pubkey) {
+      return storage.getLastReadNotificationTime(pubkey)
+    }
+    return 0
   }
 
-  const clearNewNotifications = async () => {
-    if (!pubkey) return
+  const isNotificationRead = (notificationId: string): boolean => {
+    return readNotificationIdSet.has(notificationId)
+  }
 
-    setNewNotificationIds(new Set())
-    await updateNotificationsSeenAt()
+  const markNotificationAsRead = (notificationId: string): void => {
+    setReadNotificationIdSet((prev) => new Set([...prev, notificationId]))
   }
 
   return (
     <NotificationContext.Provider
       value={{
-        hasNewNotification: newNotificationIds.size > 0,
-        clearNewNotifications,
-        getNotificationsSeenAt
+        hasNewNotification: filteredNewNotifications.length > 0,
+        getNotificationsSeenAt,
+        isNotificationRead,
+        markNotificationAsRead
       }}
     >
       {children}

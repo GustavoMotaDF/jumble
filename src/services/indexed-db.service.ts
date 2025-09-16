@@ -1,10 +1,11 @@
 import { ExtendedKind } from '@/constants'
 import { tagNameEquals } from '@/lib/tag'
+import { TRelayInfo } from '@/types'
 import { Event, kinds } from 'nostr-tools'
 
 type TValue<T = any> = {
   key: string
-  value: T
+  value: T | null
   addedAt: number
 }
 
@@ -14,10 +15,15 @@ const StoreNames = {
   FOLLOW_LIST_EVENTS: 'followListEvents',
   MUTE_LIST_EVENTS: 'muteListEvents',
   BOOKMARK_LIST_EVENTS: 'bookmarkListEvents',
+  BLOSSOM_SERVER_LIST_EVENTS: 'blossomServerListEvents',
   MUTE_DECRYPTED_TAGS: 'muteDecryptedTags',
-  RELAY_INFO_EVENTS: 'relayInfoEvents',
+  USER_EMOJI_LIST_EVENTS: 'userEmojiListEvents',
+  EMOJI_SET_EVENTS: 'emojiSetEvents',
   FAVORITE_RELAYS: 'favoriteRelays',
-  RELAY_SETS: 'relaySets'
+  RELAY_SETS: 'relaySets',
+  FOLLOWING_FAVORITE_RELAYS: 'followingFavoriteRelays',
+  RELAY_INFOS: 'relayInfos',
+  RELAY_INFO_EVENTS: 'relayInfoEvents' // deprecated
 }
 
 class IndexedDbService {
@@ -36,7 +42,7 @@ class IndexedDbService {
   init(): Promise<void> {
     if (!this.initPromise) {
       this.initPromise = new Promise((resolve, reject) => {
-        const request = window.indexedDB.open('jumble', 4)
+        const request = window.indexedDB.open('jumble', 8)
 
         request.onerror = (event) => {
           reject(event)
@@ -67,14 +73,29 @@ class IndexedDbService {
           if (!db.objectStoreNames.contains(StoreNames.MUTE_DECRYPTED_TAGS)) {
             db.createObjectStore(StoreNames.MUTE_DECRYPTED_TAGS, { keyPath: 'key' })
           }
-          if (!db.objectStoreNames.contains(StoreNames.RELAY_INFO_EVENTS)) {
-            db.createObjectStore(StoreNames.RELAY_INFO_EVENTS, { keyPath: 'key' })
-          }
           if (!db.objectStoreNames.contains(StoreNames.FAVORITE_RELAYS)) {
             db.createObjectStore(StoreNames.FAVORITE_RELAYS, { keyPath: 'key' })
           }
           if (!db.objectStoreNames.contains(StoreNames.RELAY_SETS)) {
             db.createObjectStore(StoreNames.RELAY_SETS, { keyPath: 'key' })
+          }
+          if (!db.objectStoreNames.contains(StoreNames.FOLLOWING_FAVORITE_RELAYS)) {
+            db.createObjectStore(StoreNames.FOLLOWING_FAVORITE_RELAYS, { keyPath: 'key' })
+          }
+          if (!db.objectStoreNames.contains(StoreNames.BLOSSOM_SERVER_LIST_EVENTS)) {
+            db.createObjectStore(StoreNames.BLOSSOM_SERVER_LIST_EVENTS, { keyPath: 'key' })
+          }
+          if (!db.objectStoreNames.contains(StoreNames.USER_EMOJI_LIST_EVENTS)) {
+            db.createObjectStore(StoreNames.USER_EMOJI_LIST_EVENTS, { keyPath: 'key' })
+          }
+          if (!db.objectStoreNames.contains(StoreNames.EMOJI_SET_EVENTS)) {
+            db.createObjectStore(StoreNames.EMOJI_SET_EVENTS, { keyPath: 'key' })
+          }
+          if (!db.objectStoreNames.contains(StoreNames.RELAY_INFOS)) {
+            db.createObjectStore(StoreNames.RELAY_INFOS, { keyPath: 'key' })
+          }
+          if (db.objectStoreNames.contains(StoreNames.RELAY_INFO_EVENTS)) {
+            db.deleteObjectStore(StoreNames.RELAY_INFO_EVENTS)
           }
           this.db = db
         }
@@ -82,6 +103,46 @@ class IndexedDbService {
       setTimeout(() => this.cleanUp(), 1000 * 60) // 1 minute
     }
     return this.initPromise
+  }
+
+  async putNullReplaceableEvent(pubkey: string, kind: number, d?: string) {
+    const storeName = this.getStoreNameByKind(kind)
+    if (!storeName) {
+      return Promise.reject('store name not found')
+    }
+    await this.initPromise
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        return reject('database not initialized')
+      }
+      const transaction = this.db.transaction(storeName, 'readwrite')
+      const store = transaction.objectStore(storeName)
+
+      const key = this.getReplaceableEventKey(pubkey, d)
+      const getRequest = store.get(key)
+      getRequest.onsuccess = () => {
+        const oldValue = getRequest.result as TValue<Event> | undefined
+        if (oldValue) {
+          transaction.commit()
+          return resolve(oldValue.value)
+        }
+        const putRequest = store.put(this.formatValue(key, null))
+        putRequest.onsuccess = () => {
+          transaction.commit()
+          resolve(null)
+        }
+
+        putRequest.onerror = (event) => {
+          transaction.commit()
+          reject(event)
+        }
+      }
+
+      getRequest.onerror = (event) => {
+        transaction.commit()
+        reject(event)
+      }
+    })
   }
 
   async putReplaceableEvent(event: Event): Promise<Event> {
@@ -97,11 +158,11 @@ class IndexedDbService {
       const transaction = this.db.transaction(storeName, 'readwrite')
       const store = transaction.objectStore(storeName)
 
-      const key = this.getReplaceableEventKey(event)
+      const key = this.getReplaceableEventKeyFromEvent(event)
       const getRequest = store.get(key)
       getRequest.onsuccess = () => {
         const oldValue = getRequest.result as TValue<Event> | undefined
-        if (oldValue && oldValue.value.created_at >= event.created_at) {
+        if (oldValue?.value && oldValue.value.created_at >= event.created_at) {
           transaction.commit()
           return resolve(oldValue.value)
         }
@@ -124,7 +185,11 @@ class IndexedDbService {
     })
   }
 
-  async getReplaceableEvent(pubkey: string, kind: number, d?: string): Promise<Event | undefined> {
+  async getReplaceableEvent(
+    pubkey: string,
+    kind: number,
+    d?: string
+  ): Promise<Event | undefined | null> {
     const storeName = this.getStoreNameByKind(kind)
     if (!storeName) {
       return Promise.reject('store name not found')
@@ -136,7 +201,7 @@ class IndexedDbService {
       }
       const transaction = this.db.transaction(storeName, 'readonly')
       const store = transaction.objectStore(storeName)
-      const key = d === undefined ? pubkey : `${pubkey}:${d}`
+      const key = this.getReplaceableEventKey(pubkey, d)
       const request = store.get(key)
 
       request.onsuccess = () => {
@@ -154,7 +219,7 @@ class IndexedDbService {
   async getManyReplaceableEvents(
     pubkeys: readonly string[],
     kind: number
-  ): Promise<(Event | undefined)[]> {
+  ): Promise<(Event | undefined | null)[]> {
     const storeName = this.getStoreNameByKind(kind)
     if (!storeName) {
       return Promise.reject('store name not found')
@@ -166,14 +231,14 @@ class IndexedDbService {
       }
       const transaction = this.db.transaction(storeName, 'readonly')
       const store = transaction.objectStore(storeName)
-      const events: Event[] = new Array(pubkeys.length).fill(undefined)
+      const events: (Event | null)[] = new Array(pubkeys.length).fill(undefined)
       let count = 0
       pubkeys.forEach((pubkey, i) => {
-        const request = store.get(pubkey)
+        const request = store.get(this.getReplaceableEventKey(pubkey))
 
         request.onsuccess = () => {
-          const event = (request.result as TValue<Event>)?.value
-          if (event) {
+          const event = (request.result as TValue<Event | null>)?.value
+          if (event || event === null) {
             events[i] = event
           }
 
@@ -193,7 +258,7 @@ class IndexedDbService {
     })
   }
 
-  async getMuteDecryptedTags(id: string): Promise<string[][]> {
+  async getMuteDecryptedTags(id: string): Promise<string[][] | null> {
     await this.initPromise
     return new Promise((resolve, reject) => {
       if (!this.db) {
@@ -237,54 +302,6 @@ class IndexedDbService {
     })
   }
 
-  async getAllRelayInfoEvents(): Promise<Event[]> {
-    await this.initPromise
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        return reject('database not initialized')
-      }
-      const transaction = this.db.transaction(StoreNames.RELAY_INFO_EVENTS, 'readonly')
-      const store = transaction.objectStore(StoreNames.RELAY_INFO_EVENTS)
-      const request = store.getAll()
-
-      request.onsuccess = () => {
-        transaction.commit()
-        resolve((request.result as TValue<Event>[])?.map((item) => item.value))
-      }
-
-      request.onerror = (event) => {
-        transaction.commit()
-        reject(event)
-      }
-    })
-  }
-
-  async putRelayInfoEvent(event: Event): Promise<void> {
-    await this.initPromise
-    return new Promise((resolve, reject) => {
-      if (!this.db) {
-        return reject('database not initialized')
-      }
-      const dValue = event.tags.find(tagNameEquals('d'))?.[1]
-      if (!dValue) {
-        return resolve()
-      }
-      const transaction = this.db.transaction(StoreNames.RELAY_INFO_EVENTS, 'readwrite')
-      const store = transaction.objectStore(StoreNames.RELAY_INFO_EVENTS)
-
-      const putRequest = store.put(this.formatValue(dValue, event))
-      putRequest.onsuccess = () => {
-        transaction.commit()
-        resolve()
-      }
-
-      putRequest.onerror = (event) => {
-        transaction.commit()
-        reject(event)
-      }
-    })
-  }
-
   async iterateProfileEvents(callback: (event: Event) => Promise<void>): Promise<void> {
     await this.initPromise
     if (!this.db) {
@@ -298,7 +315,10 @@ class IndexedDbService {
       request.onsuccess = (event) => {
         const cursor = (event.target as IDBRequest).result
         if (cursor) {
-          callback((cursor.value as TValue<Event>).value)
+          const value = (cursor.value as TValue<Event>).value
+          if (value) {
+            callback(value)
+          }
           cursor.continue()
         } else {
           transaction.commit()
@@ -313,16 +333,108 @@ class IndexedDbService {
     })
   }
 
-  private getReplaceableEventKey(event: Event): string {
+  async putFollowingFavoriteRelays(pubkey: string, relays: [string, string[]][]): Promise<void> {
+    await this.initPromise
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        return reject('database not initialized')
+      }
+      const transaction = this.db.transaction(StoreNames.FOLLOWING_FAVORITE_RELAYS, 'readwrite')
+      const store = transaction.objectStore(StoreNames.FOLLOWING_FAVORITE_RELAYS)
+
+      const putRequest = store.put(this.formatValue(pubkey, relays))
+      putRequest.onsuccess = () => {
+        transaction.commit()
+        resolve()
+      }
+
+      putRequest.onerror = (event) => {
+        transaction.commit()
+        reject(event)
+      }
+    })
+  }
+
+  async getFollowingFavoriteRelays(pubkey: string): Promise<[string, string[]][] | null> {
+    await this.initPromise
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        return reject('database not initialized')
+      }
+      const transaction = this.db.transaction(StoreNames.FOLLOWING_FAVORITE_RELAYS, 'readonly')
+      const store = transaction.objectStore(StoreNames.FOLLOWING_FAVORITE_RELAYS)
+      const request = store.get(pubkey)
+
+      request.onsuccess = () => {
+        transaction.commit()
+        resolve((request.result as TValue<[string, string[]][]>)?.value)
+      }
+
+      request.onerror = (event) => {
+        transaction.commit()
+        reject(event)
+      }
+    })
+  }
+
+  async putRelayInfo(relayInfo: TRelayInfo): Promise<void> {
+    await this.initPromise
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        return reject('database not initialized')
+      }
+      const transaction = this.db.transaction(StoreNames.RELAY_INFOS, 'readwrite')
+      const store = transaction.objectStore(StoreNames.RELAY_INFOS)
+
+      const putRequest = store.put(this.formatValue(relayInfo.url, relayInfo))
+      putRequest.onsuccess = () => {
+        transaction.commit()
+        resolve()
+      }
+
+      putRequest.onerror = (event) => {
+        transaction.commit()
+        reject(event)
+      }
+    })
+  }
+
+  async getRelayInfo(url: string): Promise<TRelayInfo | null> {
+    await this.initPromise
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        return reject('database not initialized')
+      }
+      const transaction = this.db.transaction(StoreNames.RELAY_INFOS, 'readonly')
+      const store = transaction.objectStore(StoreNames.RELAY_INFOS)
+      const request = store.get(url)
+
+      request.onsuccess = () => {
+        transaction.commit()
+        resolve((request.result as TValue<TRelayInfo>)?.value)
+      }
+
+      request.onerror = (event) => {
+        transaction.commit()
+        reject(event)
+      }
+    })
+  }
+
+  private getReplaceableEventKeyFromEvent(event: Event): string {
     if (
       [kinds.Metadata, kinds.Contacts].includes(event.kind) ||
       (event.kind >= 10000 && event.kind < 20000)
     ) {
-      return event.pubkey
+      return this.getReplaceableEventKey(event.pubkey)
     }
 
     const [, d] = event.tags.find(tagNameEquals('d')) ?? []
-    return `${event.pubkey}:${d ?? ''}`
+    return this.getReplaceableEventKey(event.pubkey, d)
+  }
+
+  private getReplaceableEventKey(pubkey: string, d?: string): string {
+    return d === undefined ? pubkey : `${pubkey}:${d}`
   }
 
   private getStoreNameByKind(kind: number): string | undefined {
@@ -335,12 +447,18 @@ class IndexedDbService {
         return StoreNames.FOLLOW_LIST_EVENTS
       case kinds.Mutelist:
         return StoreNames.MUTE_LIST_EVENTS
+      case ExtendedKind.BLOSSOM_SERVER_LIST:
+        return StoreNames.BLOSSOM_SERVER_LIST_EVENTS
       case kinds.Relaysets:
         return StoreNames.RELAY_SETS
       case ExtendedKind.FAVORITE_RELAYS:
         return StoreNames.FAVORITE_RELAYS
       case kinds.BookmarkList:
         return StoreNames.BOOKMARK_LIST_EVENTS
+      case kinds.UserEmojiList:
+        return StoreNames.USER_EMOJI_LIST_EVENTS
+      case kinds.Emojisets:
+        return StoreNames.EMOJI_SET_EVENTS
       default:
         return undefined
     }
@@ -365,7 +483,15 @@ class IndexedDbService {
       { name: StoreNames.RELAY_LIST_EVENTS, expirationTimestamp: Date.now() - 1000 * 60 * 60 * 24 }, // 1 day
       {
         name: StoreNames.FOLLOW_LIST_EVENTS,
-        expirationTimestamp: Date.now() - 1000 * 60 * 60 * 24
+        expirationTimestamp: Date.now() - 1000 * 60 * 60 * 24 // 1 day
+      },
+      {
+        name: StoreNames.BLOSSOM_SERVER_LIST_EVENTS,
+        expirationTimestamp: Date.now() - 1000 * 60 * 60 * 24 // 1 days
+      },
+      {
+        name: StoreNames.RELAY_INFOS,
+        expirationTimestamp: Date.now() - 1000 * 60 * 60 * 24 // 1 days
       }
     ]
     const transaction = this.db!.transaction(
@@ -384,8 +510,7 @@ class IndexedDbService {
             const cursor = (event.target as IDBRequest).result
             if (cursor) {
               const value: TValue = cursor.value
-              // 10% chance to delete
-              if (value.addedAt < expirationTimestamp && Math.random() < 0.1) {
+              if (value.addedAt < expirationTimestamp) {
                 cursor.delete()
               }
               cursor.continue()

@@ -1,18 +1,20 @@
-import {
-  EmbeddedEmojiParser,
-  EmbeddedEventParser,
-  EmbeddedImageParser,
-  EmbeddedMentionParser,
-  EmbeddedVideoParser,
-  parseContent
-} from '@/lib/content-parser'
-import { extractEmojiInfosFromTags } from '@/lib/event'
+import { ExtendedKind } from '@/constants'
+import { isMentioningMutedUsers } from '@/lib/event'
 import { cn } from '@/lib/utils'
-import { Event } from 'nostr-tools'
+import { useContentPolicy } from '@/providers/ContentPolicyProvider'
+import { useMuteList } from '@/providers/MuteListProvider'
+import { Event, kinds } from 'nostr-tools'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { EmbeddedMentionText } from '../Embedded'
-import Emoji from '../Emoji'
+import CommunityDefinitionPreview from './CommunityDefinitionPreview'
+import GroupMetadataPreview from './GroupMetadataPreview'
+import HighlightPreview from './HighlightPreview'
+import LiveEventPreview from './LiveEventPreview'
+import LongFormArticlePreview from './LongFormArticlePreview'
+import NormalContentPreview from './NormalContentPreview'
+import PictureNotePreview from './PictureNotePreview'
+import PollPreview from './PollPreview'
+import VideoNotePreview from './VideoNotePreview'
 
 export default function ContentPreview({
   event,
@@ -22,45 +24,80 @@ export default function ContentPreview({
   className?: string
 }) {
   const { t } = useTranslation()
-  const nodes = useMemo(() => {
-    if (!event) return [{ type: 'text', data: `[${t('Not found the note')}]` }]
-
-    return parseContent(event.content, [
-      EmbeddedImageParser,
-      EmbeddedVideoParser,
-      EmbeddedEventParser,
-      EmbeddedMentionParser,
-      EmbeddedEmojiParser
-    ])
-  }, [event])
-
-  const emojiInfos = extractEmojiInfosFromTags(event?.tags)
-
-  return (
-    <div className={cn('pointer-events-none', className)}>
-      {nodes.map((node, index) => {
-        if (node.type === 'text') {
-          return node.data
-        }
-        if (node.type === 'image' || node.type === 'images') {
-          return index > 0 ? ` [${t('image')}]` : `[${t('image')}]`
-        }
-        if (node.type === 'video') {
-          return index > 0 ? ` [${t('video')}]` : `[${t('video')}]`
-        }
-        if (node.type === 'event') {
-          return index > 0 ? ` [${t('note')}]` : `[${t('note')}]`
-        }
-        if (node.type === 'mention') {
-          return <EmbeddedMentionText key={index} userId={node.data.split(':')[1]} />
-        }
-        if (node.type === 'emoji') {
-          const shortcode = node.data.split(':')[1]
-          const emoji = emojiInfos.find((e) => e.shortcode === shortcode)
-          if (!emoji) return node.data
-          return <Emoji key={index} emoji={emoji} />
-        }
-      })}
-    </div>
+  const { mutePubkeySet } = useMuteList()
+  const { hideContentMentioningMutedUsers } = useContentPolicy()
+  const isMuted = useMemo(
+    () => (event ? mutePubkeySet.has(event.pubkey) : false),
+    [mutePubkeySet, event]
   )
+  const isMentioningMuted = useMemo(
+    () =>
+      hideContentMentioningMutedUsers && event
+        ? isMentioningMutedUsers(event, mutePubkeySet)
+        : false,
+    [event, mutePubkeySet]
+  )
+
+  if (!event) {
+    return <div className={cn('pointer-events-none', className)}>{`[${t('Note not found')}]`}</div>
+  }
+
+  if (isMuted) {
+    return (
+      <div className={cn('pointer-events-none', className)}>[{t('This user has been muted')}]</div>
+    )
+  }
+
+  if (isMentioningMuted) {
+    return (
+      <div className={cn('pointer-events-none', className)}>
+        [{t('This note mentions a user you muted')}]
+      </div>
+    )
+  }
+
+  if (
+    [
+      kinds.ShortTextNote,
+      ExtendedKind.COMMENT,
+      ExtendedKind.VOICE,
+      ExtendedKind.VOICE_COMMENT
+    ].includes(event.kind)
+  ) {
+    return <NormalContentPreview event={event} className={className} />
+  }
+
+  if (event.kind === kinds.Highlights) {
+    return <HighlightPreview event={event} className={className} />
+  }
+
+  if (event.kind === ExtendedKind.POLL) {
+    return <PollPreview event={event} className={className} />
+  }
+
+  if (event.kind === kinds.LongFormArticle) {
+    return <LongFormArticlePreview event={event} className={className} />
+  }
+
+  if (event.kind === ExtendedKind.VIDEO || event.kind === ExtendedKind.SHORT_VIDEO) {
+    return <VideoNotePreview event={event} className={className} />
+  }
+
+  if (event.kind === ExtendedKind.PICTURE) {
+    return <PictureNotePreview event={event} className={className} />
+  }
+
+  if (event.kind === ExtendedKind.GROUP_METADATA) {
+    return <GroupMetadataPreview event={event} className={className} />
+  }
+
+  if (event.kind === kinds.CommunityDefinition) {
+    return <CommunityDefinitionPreview event={event} className={className} />
+  }
+
+  if (event.kind === kinds.LiveEvent) {
+    return <LiveEventPreview event={event} className={className} />
+  }
+
+  return <div className={className}>[{t('Cannot handle event of kind k', { k: event.kind })}]</div>
 }

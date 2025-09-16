@@ -1,9 +1,10 @@
 import { Button } from '@/components/ui/button'
-import { CODY_PUBKEY } from '@/constants'
+import { JUMBLE_PUBKEY } from '@/constants'
 import { cn } from '@/lib/utils'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import ZapDialog from '../ZapDialog'
+import PlatinumSponsors from './PlatinumSponsors'
 import RecentSupporters from './RecentSupporters'
 
 export default function Donation({ className }: { className?: string }) {
@@ -39,11 +40,12 @@ export default function Donation({ className }: { className?: string }) {
           )
         })}
       </div>
+      <PlatinumSponsors />
       <RecentSupporters />
       <ZapDialog
         open={open}
         setOpen={setOpen}
-        pubkey={CODY_PUBKEY}
+        pubkey={JUMBLE_PUBKEY}
         defaultAmount={donationAmount}
       />
     </div>

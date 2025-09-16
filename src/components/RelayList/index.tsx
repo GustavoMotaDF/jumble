@@ -1,7 +1,6 @@
-import { toRelay } from '@/lib/link'
-import { useSecondaryPage } from '@/PageManager'
+import { usePrimaryPage } from '@/PageManager'
 import relayInfoService from '@/services/relay-info.service'
-import { TNip66RelayInfo } from '@/types'
+import { TRelayInfo } from '@/types'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import RelaySimpleInfo, { RelaySimpleInfoSkeleton } from '../RelaySimpleInfo'
@@ -9,9 +8,9 @@ import SearchInput from '../SearchInput'
 
 export default function RelayList() {
   const { t } = useTranslation()
-  const { push } = useSecondaryPage()
+  const { navigate } = usePrimaryPage()
   const [loading, setLoading] = useState(true)
-  const [relays, setRelays] = useState<TNip66RelayInfo[]>([])
+  const [relays, setRelays] = useState<TRelayInfo[]>([])
   const [showCount, setShowCount] = useState(20)
   const [input, setInput] = useState('')
   const [debouncedInput, setDebouncedInput] = useState(input)
@@ -78,12 +77,12 @@ export default function RelayList() {
           className="clickable p-4 border-b"
           onClick={(e) => {
             e.stopPropagation()
-            push(toRelay(relay.url))
+            navigate('relay', { url: relay.url })
           }}
         />
       ))}
       {showCount < relays.length && <div ref={bottomRef} />}
-      {loading && <RelaySimpleInfoSkeleton />}
+      {loading && <RelaySimpleInfoSkeleton className="p-4" />}
       {!loading && relays.length === 0 && (
         <div className="text-center text-muted-foreground text-sm">{t('no relays found')}</div>
       )}

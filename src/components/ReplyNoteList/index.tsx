@@ -1,71 +1,118 @@
-import { Separator } from '@/components/ui/separator'
-import { BIG_RELAY_URLS } from '@/constants'
+import { BIG_RELAY_URLS, ExtendedKind } from '@/constants'
 import {
-  getParentEventHexId,
+  getParentETag,
+  getReplaceableCoordinateFromEvent,
+  getRootATag,
+  getRootETag,
   getRootEventHexId,
-  getRootEventTag,
+  isMentioningMutedUsers,
+  isReplaceableEvent,
   isReplyNoteEvent
 } from '@/lib/event'
-import { generateEventIdFromETag } from '@/lib/tag'
+import { toNote } from '@/lib/link'
+import { generateBech32IdFromETag, tagNameEquals } from '@/lib/tag'
 import { useSecondaryPage } from '@/PageManager'
-import { useNostr } from '@/providers/NostrProvider'
-import { useNoteStats } from '@/providers/NoteStatsProvider'
+import { useContentPolicy } from '@/providers/ContentPolicyProvider'
+import { useMuteList } from '@/providers/MuteListProvider'
+import { useReply } from '@/providers/ReplyProvider'
+import { useUserTrust } from '@/providers/UserTrustProvider'
 import client from '@/services/client.service'
-import { Event as NEvent, kinds } from 'nostr-tools'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Filter, Event as NEvent, kinds } from 'nostr-tools'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import ReplyNote from '../ReplyNote'
+import { LoadingBar } from '../LoadingBar'
+import ReplyNote, { ReplyNoteSkeleton } from '../ReplyNote'
+
+type TRootInfo =
+  | { type: 'E'; id: string; pubkey: string }
+  | { type: 'A'; id: string; eventId: string; pubkey: string; relay?: string }
+  | { type: 'I'; id: string }
 
 const LIMIT = 100
+const SHOW_COUNT = 10
 
-export default function ReplyNoteList({
-  index,
-  event,
-  className
-}: {
-  index?: number
-  event: NEvent
-  className?: string
-}) {
+export default function ReplyNoteList({ index, event }: { index?: number; event: NEvent }) {
   const { t } = useTranslation()
-  const { currentIndex } = useSecondaryPage()
-  const { pubkey } = useNostr()
-  const [rootInfo, setRootInfo] = useState<{ id: string; pubkey: string } | undefined>(undefined)
+  const { push, currentIndex } = useSecondaryPage()
+  const { hideUntrustedInteractions, isUserTrusted } = useUserTrust()
+  const { mutePubkeySet } = useMuteList()
+  const { hideContentMentioningMutedUsers } = useContentPolicy()
+  const [rootInfo, setRootInfo] = useState<TRootInfo | undefined>(undefined)
+  const { repliesMap, addReplies } = useReply()
+  const replies = useMemo(() => {
+    const replyIdSet = new Set<string>()
+    const replyEvents: NEvent[] = []
+    const currentEventKey = isReplaceableEvent(event.kind)
+      ? getReplaceableCoordinateFromEvent(event)
+      : event.id
+    let parentEventKeys = [currentEventKey]
+    while (parentEventKeys.length > 0) {
+      const events = parentEventKeys.flatMap((id) => repliesMap.get(id)?.events || [])
+      events.forEach((evt) => {
+        if (replyIdSet.has(evt.id)) return
+        if (mutePubkeySet.has(evt.pubkey)) return
+        if (hideContentMentioningMutedUsers && isMentioningMutedUsers(evt, mutePubkeySet)) return
+
+        replyIdSet.add(evt.id)
+        replyEvents.push(evt)
+      })
+      parentEventKeys = events.map((evt) => evt.id)
+    }
+    return replyEvents.sort((a, b) => a.created_at - b.created_at)
+  }, [event.id, repliesMap])
   const [timelineKey, setTimelineKey] = useState<string | undefined>(undefined)
   const [until, setUntil] = useState<number | undefined>(undefined)
-  const [events, setEvents] = useState<NEvent[]>([])
-  const [replies, setReplies] = useState<NEvent[]>([])
-  const [replyMap, setReplyMap] = useState<
-    Map<string, { event: NEvent; level: number; parent?: NEvent } | undefined>
-  >(new Map())
   const [loading, setLoading] = useState<boolean>(false)
+  const [showCount, setShowCount] = useState(SHOW_COUNT)
   const [highlightReplyId, setHighlightReplyId] = useState<string | undefined>(undefined)
-  const { updateNoteReplyCount } = useNoteStats()
   const replyRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const fetchRootEvent = async () => {
-      let root = { id: event.id, pubkey: event.pubkey }
-      const rootEventTag = getRootEventTag(event)
-      if (rootEventTag) {
-        const [, rootEventHexId, , , rootEventPubkey] = rootEventTag
+      let root: TRootInfo = isReplaceableEvent(event.kind)
+        ? {
+            type: 'A',
+            id: getReplaceableCoordinateFromEvent(event),
+            eventId: event.id,
+            pubkey: event.pubkey,
+            relay: client.getEventHint(event.id)
+          }
+        : { type: 'E', id: event.id, pubkey: event.pubkey }
+      const rootETag = getRootETag(event)
+      if (rootETag) {
+        const [, rootEventHexId, , , rootEventPubkey] = rootETag
         if (rootEventHexId && rootEventPubkey) {
-          root = { id: rootEventHexId, pubkey: rootEventPubkey }
+          root = { type: 'E', id: rootEventHexId, pubkey: rootEventPubkey }
         } else {
-          const rootEventId = generateEventIdFromETag(rootEventTag)
+          const rootEventId = generateBech32IdFromETag(rootETag)
           if (rootEventId) {
             const rootEvent = await client.fetchEvent(rootEventId)
             if (rootEvent) {
-              root = { id: rootEvent.id, pubkey: rootEvent.pubkey }
+              root = { type: 'E', id: rootEvent.id, pubkey: rootEvent.pubkey }
             }
           }
+        }
+      } else if (event.kind === ExtendedKind.COMMENT) {
+        const rootATag = getRootATag(event)
+        if (rootATag) {
+          const [, coordinate, relay] = rootATag
+          const [, pubkey] = coordinate.split(':')
+          root = { type: 'A', id: coordinate, eventId: event.id, pubkey, relay }
+        }
+        const rootITag = event.tags.find(tagNameEquals('I'))
+        if (rootITag) {
+          root = { type: 'I', id: rootITag[1] }
         }
       }
       setRootInfo(root)
     }
     fetchRootEvent()
   }, [event])
+
+  const onNewReply = useCallback((evt: NEvent) => {
+    addReplies([evt])
+  }, [])
 
   useEffect(() => {
     if (!rootInfo) return
@@ -78,11 +125,11 @@ export default function ReplyNoteList({
       }
     }
 
-    client.addEventListener('eventPublished', handleEventPublished)
+    client.addEventListener('newEvent', handleEventPublished)
     return () => {
-      client.removeEventListener('eventPublished', handleEventPublished)
+      client.removeEventListener('newEvent', handleEventPublished)
     }
-  }, [rootInfo])
+  }, [rootInfo, onNewReply])
 
   useEffect(() => {
     if (loading || !rootInfo || currentIndex !== index) return
@@ -91,25 +138,66 @@ export default function ReplyNoteList({
       setLoading(true)
 
       try {
-        const relayList = await client.fetchRelayList(rootInfo.pubkey)
+        const relayList = await client.fetchRelayList(
+          (rootInfo as { pubkey?: string }).pubkey ?? event.pubkey
+        )
         const relayUrls = relayList.read.concat(BIG_RELAY_URLS)
-        const seenOn = client.getSeenEventRelayUrls(rootInfo.id)
+        const seenOn =
+          rootInfo.type === 'E'
+            ? client.getSeenEventRelayUrls(rootInfo.id)
+            : rootInfo.type === 'A'
+              ? client.getSeenEventRelayUrls(rootInfo.eventId)
+              : []
         relayUrls.unshift(...seenOn)
-        const { closer, timelineKey } = await client.subscribeTimeline(
-          [
+
+        const filters: (Omit<Filter, 'since' | 'until'> & {
+          limit: number
+        })[] = []
+        if (rootInfo.type === 'E') {
+          filters.push({
+            '#e': [rootInfo.id],
+            kinds: [kinds.ShortTextNote],
+            limit: LIMIT
+          })
+          if (event.kind !== kinds.ShortTextNote) {
+            filters.push({
+              '#E': [rootInfo.id],
+              kinds: [ExtendedKind.COMMENT, ExtendedKind.VOICE_COMMENT],
+              limit: LIMIT
+            })
+          }
+        } else if (rootInfo.type === 'A') {
+          filters.push(
             {
-              urls: relayUrls.slice(0, 5),
-              filter: {
-                '#e': [rootInfo.id],
-                kinds: [kinds.ShortTextNote],
-                limit: LIMIT
-              }
+              '#a': [rootInfo.id],
+              kinds: [kinds.ShortTextNote],
+              limit: LIMIT
+            },
+            {
+              '#A': [rootInfo.id],
+              kinds: [ExtendedKind.COMMENT, ExtendedKind.VOICE_COMMENT],
+              limit: LIMIT
             }
-          ],
+          )
+          if (rootInfo.relay) {
+            relayUrls.push(rootInfo.relay)
+          }
+        } else {
+          filters.push({
+            '#I': [rootInfo.id],
+            kinds: [ExtendedKind.COMMENT, ExtendedKind.VOICE_COMMENT],
+            limit: LIMIT
+          })
+        }
+        const { closer, timelineKey } = await client.subscribeTimeline(
+          filters.map((filter) => ({
+            urls: relayUrls.slice(0, 5),
+            filter
+          })),
           {
             onEvents: (evts, eosed) => {
               if (evts.length > 0) {
-                setEvents(evts.filter((evt) => isReplyNoteEvent(evt)).reverse())
+                addReplies(evts.filter((evt) => isReplyNoteEvent(evt)))
               }
               if (eosed) {
                 setUntil(evts.length >= LIMIT ? evts[evts.length - 1].created_at - 1 : undefined)
@@ -118,7 +206,7 @@ export default function ReplyNoteList({
             },
             onNew: (evt) => {
               if (!isReplyNoteEvent(evt)) return
-              onNewReply(evt)
+              addReplies([evt])
             }
           }
         )
@@ -134,71 +222,52 @@ export default function ReplyNoteList({
     return () => {
       promise.then((closer) => closer?.())
     }
-  }, [rootInfo, currentIndex, index])
+  }, [rootInfo, currentIndex, index, onNewReply])
 
   useEffect(() => {
-    const replies: NEvent[] = []
-    const replyMap: Map<string, { event: NEvent; level: number; parent?: NEvent } | undefined> =
-      new Map()
-    const rootEventId = getRootEventHexId(event) ?? event.id
-    const isRootEvent = rootEventId === event.id
-    for (const evt of events) {
-      if (evt.created_at < event.created_at) continue
-
-      const parentEventId = getParentEventHexId(evt)
-      if (parentEventId) {
-        const parentReplyInfo = replyMap.get(parentEventId)
-        if (!parentReplyInfo && parentEventId !== event.id) continue
-
-        const level = parentReplyInfo ? parentReplyInfo.level + 1 : 1
-        replies.push(evt)
-        replyMap.set(evt.id, { event: evt, level, parent: parentReplyInfo?.event })
-        continue
-      }
-
-      if (!isRootEvent) continue
-
-      replies.push(evt)
-      replyMap.set(evt.id, { event: evt, level: 1 })
-    }
-    setReplyMap(replyMap)
-    setReplies(replies)
-    updateNoteReplyCount(event.id, replies.length)
     if (replies.length === 0) {
       loadMore()
     }
-  }, [events, event, updateNoteReplyCount])
+  }, [replies])
+
+  useEffect(() => {
+    const options = {
+      root: null,
+      rootMargin: '10px',
+      threshold: 0.1
+    }
+
+    const observerInstance = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && showCount < replies.length) {
+        setShowCount((prev) => prev + SHOW_COUNT)
+      }
+    }, options)
+
+    const currentBottomRef = bottomRef.current
+
+    if (currentBottomRef) {
+      observerInstance.observe(currentBottomRef)
+    }
+
+    return () => {
+      if (observerInstance && currentBottomRef) {
+        observerInstance.unobserve(currentBottomRef)
+      }
+    }
+  }, [replies, showCount])
 
   const loadMore = useCallback(async () => {
     if (loading || !until || !timelineKey) return
 
     setLoading(true)
     const events = await client.loadMoreTimeline(timelineKey, until, LIMIT)
-    const olderEvents = events.filter((evt) => isReplyNoteEvent(evt)).reverse()
+    const olderEvents = events.filter((evt) => isReplyNoteEvent(evt))
     if (olderEvents.length > 0) {
-      setEvents((pre) => [...olderEvents, ...pre])
+      addReplies(olderEvents)
     }
     setUntil(events.length ? events[events.length - 1].created_at - 1 : undefined)
     setLoading(false)
   }, [loading, until, timelineKey])
-
-  const onNewReply = useCallback(
-    (evt: NEvent) => {
-      setEvents((pre) => {
-        if (pre.some((reply) => reply.id === evt.id)) return pre
-        return [...pre, evt]
-      })
-      if (evt.pubkey === pubkey) {
-        setTimeout(() => {
-          if (bottomRef.current) {
-            bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-          }
-          highlightReply(evt.id, false)
-        }, 100)
-      }
-    },
-    [pubkey]
-  )
 
   const highlightReply = useCallback((eventId: string, scrollTo = true) => {
     if (scrollTo) {
@@ -214,25 +283,49 @@ export default function ReplyNoteList({
   }, [])
 
   return (
-    <>
-      {(loading || (!!until && replies.length > 0)) && (
+    <div className="min-h-[80vh]">
+      {loading && <LoadingBar />}
+      {!loading && until && (
         <div
-          className={`text-sm text-center text-muted-foreground mt-2 ${!loading ? 'hover:text-foreground cursor-pointer' : ''}`}
+          className={`text-sm text-center text-muted-foreground border-b py-2 ${!loading ? 'hover:text-foreground cursor-pointer' : ''}`}
           onClick={loadMore}
         >
-          {loading ? t('loading...') : t('load more older replies')}
+          {t('load more older replies')}
         </div>
       )}
-      {replies.length > 0 && (loading || until) && <Separator className="mt-2" />}
-      <div className={className}>
-        {replies.map((reply) => {
-          const info = replyMap.get(reply.id)
+      <div>
+        {replies.slice(0, showCount).map((reply) => {
+          if (hideUntrustedInteractions && !isUserTrusted(reply.pubkey)) {
+            const repliesForThisReply = repliesMap.get(reply.id)
+            // If the reply is not trusted and there are no trusted replies for this reply, skip rendering
+            if (
+              !repliesForThisReply ||
+              repliesForThisReply.events.every((evt) => !isUserTrusted(evt.pubkey))
+            ) {
+              return null
+            }
+          }
+
+          const parentETag = getParentETag(reply)
+          const parentEventHexId = parentETag?.[1]
+          const parentEventId = parentETag ? generateBech32IdFromETag(parentETag) : undefined
           return (
-            <div ref={(el) => (replyRefs.current[reply.id] = el)} key={reply.id}>
+            <div
+              ref={(el) => (replyRefs.current[reply.id] = el)}
+              key={reply.id}
+              className="scroll-mt-12"
+            >
               <ReplyNote
                 event={reply}
-                parentEvent={info?.parent}
-                onClickParent={highlightReply}
+                parentEventId={event.id !== parentEventHexId ? parentEventId : undefined}
+                onClickParent={() => {
+                  if (!parentEventHexId) return
+                  if (replies.every((r) => r.id !== parentEventHexId)) {
+                    push(toNote(parentEventId ?? parentEventHexId))
+                    return
+                  }
+                  highlightReply(parentEventHexId)
+                }}
                 highlight={highlightReplyId === reply.id}
               />
             </div>
@@ -240,11 +333,12 @@ export default function ReplyNoteList({
         })}
       </div>
       {!loading && (
-        <div className="text-sm mt-2 text-center text-muted-foreground">
+        <div className="text-sm mt-2 mb-3 text-center text-muted-foreground">
           {replies.length > 0 ? t('no more replies') : t('no replies')}
         </div>
       )}
       <div ref={bottomRef} />
-    </>
+      {loading && <ReplyNoteSkeleton />}
+    </div>
   )
 }

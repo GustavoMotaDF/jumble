@@ -1,18 +1,34 @@
 import LoginDialog from '@/components/LoginDialog'
 import { ApplicationDataKey, BIG_RELAY_URLS, ExtendedKind } from '@/constants'
-import { useToast } from '@/hooks'
-import { createSeenNotificationsAtDraftEvent } from '@/lib/draft-event'
+import {
+  createDeletionRequestDraftEvent,
+  createFollowListDraftEvent,
+  createMuteListDraftEvent,
+  createRelayListDraftEvent,
+  createSeenNotificationsAtDraftEvent
+} from '@/lib/draft-event'
 import {
   getLatestEvent,
-  getProfileFromProfileEvent,
-  getRelayListFromRelayListEvent,
-  getReplaceableEventIdentifier
+  getReplaceableEventIdentifier,
+  isProtectedEvent,
+  minePow
 } from '@/lib/event'
-import { formatPubkey, isValidPubkey } from '@/lib/pubkey'
+import { getProfileFromEvent, getRelayListFromEvent } from '@/lib/event-metadata'
+import { formatPubkey, pubkeyToNpub } from '@/lib/pubkey'
 import client from '@/services/client.service'
+import customEmojiService from '@/services/custom-emoji.service'
 import indexedDb from '@/services/indexed-db.service'
 import storage from '@/services/local-storage.service'
-import { ISigner, TAccount, TAccountPointer, TDraftEvent, TProfile, TRelayList } from '@/types'
+import noteStatsService from '@/services/note-stats.service'
+import {
+  ISigner,
+  TAccount,
+  TAccountPointer,
+  TDraftEvent,
+  TProfile,
+  TPublishOptions,
+  TRelayList
+} from '@/types'
 import { hexToBytes } from '@noble/hashes/utils'
 import dayjs from 'dayjs'
 import { Event, kinds, VerifiedEvent } from 'nostr-tools'
@@ -20,8 +36,11 @@ import * as nip19 from 'nostr-tools/nip19'
 import * as nip49 from 'nostr-tools/nip49'
 import { createContext, useContext, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+import { useDeletedEvent } from '../DeletedEventProvider'
 import { BunkerSigner } from './bunker.signer'
 import { Nip07Signer } from './nip-07.signer'
+import { NostrConnectionSigner } from './nostrConnection.signer'
 import { NpubSigner } from './npub.signer'
 import { NsecSigner } from './nsec.signer'
 
@@ -31,26 +50,29 @@ type TNostrContext = {
   profile: TProfile | null
   profileEvent: Event | null
   relayList: TRelayList | null
-  followListEvent?: Event
-  muteListEvent?: Event
-  bookmarkListEvent?: Event
+  followListEvent: Event | null
+  muteListEvent: Event | null
+  bookmarkListEvent: Event | null
   favoriteRelaysEvent: Event | null
+  userEmojiListEvent: Event | null
   notificationsSeenAt: number
   account: TAccountPointer | null
   accounts: TAccountPointer[]
   nsec: string | null
   ncryptsec: string | null
   switchAccount: (account: TAccountPointer | null) => Promise<void>
-  nsecLogin: (nsec: string, password?: string) => Promise<string>
+  nsecLogin: (nsec: string, password?: string, needSetup?: boolean) => Promise<string>
   ncryptsecLogin: (ncryptsec: string) => Promise<string>
   nip07Login: () => Promise<string>
   bunkerLogin: (bunker: string) => Promise<string>
+  nostrConnectionLogin: (clientSecretKey: Uint8Array, connectionString: string) => Promise<string>
   npubLogin(npub: string): Promise<string>
   removeAccount: (account: TAccountPointer) => void
   /**
    * Default publish the event to current relays, user's write relays and additional relays
    */
-  publish: (draftEvent: TDraftEvent, options?: { specifiedRelayUrls?: string[] }) => Promise<Event>
+  publish: (draftEvent: TDraftEvent, options?: TPublishOptions) => Promise<Event>
+  attemptDelete: (targetEvent: Event) => Promise<void>
   signHttpAuth: (url: string, method: string) => Promise<string>
   signEvent: (draftEvent: TDraftEvent) => Promise<VerifiedEvent>
   nip04Encrypt: (pubkey: string, plainText: string) => Promise<string>
@@ -60,13 +82,15 @@ type TNostrContext = {
   updateRelayListEvent: (relayListEvent: Event) => Promise<void>
   updateProfileEvent: (profileEvent: Event) => Promise<void>
   updateFollowListEvent: (followListEvent: Event) => Promise<void>
-  updateMuteListEvent: (muteListEvent: Event, tags: string[][]) => Promise<void>
+  updateMuteListEvent: (muteListEvent: Event, privateTags: string[][]) => Promise<void>
   updateBookmarkListEvent: (bookmarkListEvent: Event) => Promise<void>
   updateFavoriteRelaysEvent: (favoriteRelaysEvent: Event) => Promise<void>
-  updateNotificationsSeenAt: () => Promise<void>
+  updateNotificationsSeenAt: (skipPublish?: boolean) => Promise<void>
 }
 
 const NostrContext = createContext<TNostrContext | undefined>(undefined)
+
+const lastPublishedSeenNotificationsAtEventAtMap = new Map<string, number>()
 
 export const useNostr = () => {
   const context = useContext(NostrContext)
@@ -78,7 +102,10 @@ export const useNostr = () => {
 
 export function NostrProvider({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation()
-  const { toast } = useToast()
+  const { addDeletedEvent } = useDeletedEvent()
+  const [accounts, setAccounts] = useState<TAccountPointer[]>(
+    storage.getAccounts().map((act) => ({ pubkey: act.pubkey, signerType: act.signerType }))
+  )
   const [account, setAccount] = useState<TAccountPointer | null>(null)
   const [nsec, setNsec] = useState<string | null>(null)
   const [ncryptsec, setNcryptsec] = useState<string | null>(null)
@@ -87,10 +114,11 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<TProfile | null>(null)
   const [profileEvent, setProfileEvent] = useState<Event | null>(null)
   const [relayList, setRelayList] = useState<TRelayList | null>(null)
-  const [followListEvent, setFollowListEvent] = useState<Event | undefined>(undefined)
-  const [muteListEvent, setMuteListEvent] = useState<Event | undefined>(undefined)
-  const [bookmarkListEvent, setBookmarkListEvent] = useState<Event | undefined>(undefined)
+  const [followListEvent, setFollowListEvent] = useState<Event | null>(null)
+  const [muteListEvent, setMuteListEvent] = useState<Event | null>(null)
+  const [bookmarkListEvent, setBookmarkListEvent] = useState<Event | null>(null)
   const [favoriteRelaysEvent, setFavoriteRelaysEvent] = useState<Event | null>(null)
+  const [userEmojiListEvent, setUserEmojiListEvent] = useState<Event | null>(null)
   const [notificationsSeenAt, setNotificationsSeenAt] = useState(-1)
   const [isInitialized, setIsInitialized] = useState(false)
 
@@ -130,6 +158,10 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
       setProfileEvent(null)
       setNsec(null)
       setFavoriteRelaysEvent(null)
+      setFollowListEvent(null)
+      setMuteListEvent(null)
+      setBookmarkListEvent(null)
+      setNotificationsSeenAt(-1)
       if (!account) {
         return
       }
@@ -147,29 +179,32 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
       } else {
         setNcryptsec(null)
       }
+
+      const storedNotificationsSeenAt = storage.getLastReadNotificationTime(account.pubkey)
+
       const [
         storedRelayListEvent,
         storedProfileEvent,
         storedFollowListEvent,
         storedMuteListEvent,
         storedBookmarkListEvent,
-        storedFavoriteRelaysEvent
+        storedFavoriteRelaysEvent,
+        storedUserEmojiListEvent
       ] = await Promise.all([
         indexedDb.getReplaceableEvent(account.pubkey, kinds.RelayList),
         indexedDb.getReplaceableEvent(account.pubkey, kinds.Metadata),
         indexedDb.getReplaceableEvent(account.pubkey, kinds.Contacts),
         indexedDb.getReplaceableEvent(account.pubkey, kinds.Mutelist),
         indexedDb.getReplaceableEvent(account.pubkey, kinds.BookmarkList),
-        indexedDb.getReplaceableEvent(account.pubkey, ExtendedKind.FAVORITE_RELAYS)
+        indexedDb.getReplaceableEvent(account.pubkey, ExtendedKind.FAVORITE_RELAYS),
+        indexedDb.getReplaceableEvent(account.pubkey, kinds.UserEmojiList)
       ])
       if (storedRelayListEvent) {
-        setRelayList(
-          storedRelayListEvent ? getRelayListFromRelayListEvent(storedRelayListEvent) : null
-        )
+        setRelayList(getRelayListFromEvent(storedRelayListEvent))
       }
       if (storedProfileEvent) {
         setProfileEvent(storedProfileEvent)
-        setProfile(getProfileFromProfileEvent(storedProfileEvent))
+        setProfile(getProfileFromEvent(storedProfileEvent))
       }
       if (storedFollowListEvent) {
         setFollowListEvent(storedFollowListEvent)
@@ -183,13 +218,16 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
       if (storedFavoriteRelaysEvent) {
         setFavoriteRelaysEvent(storedFavoriteRelaysEvent)
       }
+      if (storedUserEmojiListEvent) {
+        setUserEmojiListEvent(storedUserEmojiListEvent)
+      }
 
       const relayListEvents = await client.fetchEvents(BIG_RELAY_URLS, {
         kinds: [kinds.RelayList],
         authors: [account.pubkey]
       })
       const relayListEvent = getLatestEvent(relayListEvents) ?? storedRelayListEvent
-      const relayList = getRelayListFromRelayListEvent(relayListEvent)
+      const relayList = getRelayListFromEvent(relayListEvent)
       if (relayListEvent) {
         client.updateRelayListCache(relayListEvent)
         await indexedDb.putReplaceableEvent(relayListEvent)
@@ -203,7 +241,9 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
             kinds.Contacts,
             kinds.Mutelist,
             kinds.BookmarkList,
-            ExtendedKind.FAVORITE_RELAYS
+            ExtendedKind.FAVORITE_RELAYS,
+            ExtendedKind.BLOSSOM_SERVER_LIST,
+            kinds.UserEmojiList
           ],
           authors: [account.pubkey]
         },
@@ -219,48 +259,68 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
       const muteListEvent = sortedEvents.find((e) => e.kind === kinds.Mutelist)
       const bookmarkListEvent = sortedEvents.find((e) => e.kind === kinds.BookmarkList)
       const favoriteRelaysEvent = sortedEvents.find((e) => e.kind === ExtendedKind.FAVORITE_RELAYS)
+      const blossomServerListEvent = sortedEvents.find(
+        (e) => e.kind === ExtendedKind.BLOSSOM_SERVER_LIST
+      )
+      const userEmojiListEvent = sortedEvents.find((e) => e.kind === kinds.UserEmojiList)
       const notificationsSeenAtEvent = sortedEvents.find(
         (e) =>
           e.kind === kinds.Application &&
           getReplaceableEventIdentifier(e) === ApplicationDataKey.NOTIFICATIONS_SEEN_AT
       )
       if (profileEvent) {
-        setProfileEvent(profileEvent)
-        setProfile(getProfileFromProfileEvent(profileEvent))
-        await indexedDb.putReplaceableEvent(profileEvent)
+        const updatedProfileEvent = await indexedDb.putReplaceableEvent(profileEvent)
+        if (updatedProfileEvent.id === profileEvent.id) {
+          setProfileEvent(updatedProfileEvent)
+          setProfile(getProfileFromEvent(updatedProfileEvent))
+        }
       } else if (!storedProfileEvent) {
         setProfile({
           pubkey: account.pubkey,
+          npub: pubkeyToNpub(account.pubkey) ?? '',
           username: formatPubkey(account.pubkey)
         })
       }
       if (followListEvent) {
-        setFollowListEvent(followListEvent)
-        await indexedDb.putReplaceableEvent(followListEvent)
+        const updatedFollowListEvent = await indexedDb.putReplaceableEvent(followListEvent)
+        if (updatedFollowListEvent.id === followListEvent.id) {
+          setFollowListEvent(followListEvent)
+        }
       }
       if (muteListEvent) {
-        setMuteListEvent(muteListEvent)
-        await indexedDb.putReplaceableEvent(muteListEvent)
+        const updatedMuteListEvent = await indexedDb.putReplaceableEvent(muteListEvent)
+        if (updatedMuteListEvent.id === muteListEvent.id) {
+          setMuteListEvent(muteListEvent)
+        }
       }
       if (bookmarkListEvent) {
-        setBookmarkListEvent(bookmarkListEvent)
-        await indexedDb.putReplaceableEvent(bookmarkListEvent)
+        const updateBookmarkListEvent = await indexedDb.putReplaceableEvent(bookmarkListEvent)
+        if (updateBookmarkListEvent.id === bookmarkListEvent.id) {
+          setBookmarkListEvent(bookmarkListEvent)
+        }
       }
       if (favoriteRelaysEvent) {
-        setFavoriteRelaysEvent(favoriteRelaysEvent)
-        await indexedDb.putReplaceableEvent(favoriteRelaysEvent)
+        const updatedFavoriteRelaysEvent = await indexedDb.putReplaceableEvent(favoriteRelaysEvent)
+        if (updatedFavoriteRelaysEvent.id === favoriteRelaysEvent.id) {
+          setFavoriteRelaysEvent(updatedFavoriteRelaysEvent)
+        }
+      }
+      if (blossomServerListEvent) {
+        await client.updateBlossomServerListEventCache(blossomServerListEvent)
+      }
+      if (userEmojiListEvent) {
+        const updatedUserEmojiListEvent = await indexedDb.putReplaceableEvent(userEmojiListEvent)
+        if (updatedUserEmojiListEvent.id === userEmojiListEvent.id) {
+          setUserEmojiListEvent(updatedUserEmojiListEvent)
+        }
       }
 
-      const storedNotificationsSeenAt = storage.getLastReadNotificationTime(account.pubkey)
-      if (
-        notificationsSeenAtEvent &&
-        notificationsSeenAtEvent.created_at > storedNotificationsSeenAt
-      ) {
-        setNotificationsSeenAt(notificationsSeenAtEvent.created_at)
-        storage.setLastReadNotificationTime(account.pubkey, notificationsSeenAtEvent.created_at)
-      } else {
-        setNotificationsSeenAt(storedNotificationsSeenAt)
-      }
+      const notificationsSeenAt = Math.max(
+        notificationsSeenAtEvent?.created_at ?? 0,
+        storedNotificationsSeenAt
+      )
+      setNotificationsSeenAt(notificationsSeenAt)
+      storage.setLastReadNotificationTime(account.pubkey, notificationsSeenAt)
 
       client.initUserIndexFromFollowings(account.pubkey, controller.signal)
       return controller
@@ -274,12 +334,47 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
   }, [account])
 
   useEffect(() => {
+    if (!account) return
+
+    const initInteractions = async () => {
+      const pubkey = account.pubkey
+      const relayList = await client.fetchRelayList(pubkey)
+      const events = await client.fetchEvents(relayList.write.slice(0, 4), [
+        {
+          authors: [pubkey],
+          kinds: [kinds.Reaction, kinds.Repost],
+          limit: 100
+        },
+        {
+          '#P': [pubkey],
+          kinds: [kinds.Zap],
+          limit: 100
+        }
+      ])
+      noteStatsService.updateNoteStatsByEvents(events)
+    }
+    initInteractions()
+  }, [account])
+
+  useEffect(() => {
     if (signer) {
       client.signer = signer
     } else {
       client.signer = undefined
     }
   }, [signer])
+
+  useEffect(() => {
+    if (account) {
+      client.pubkey = account.pubkey
+    } else {
+      client.pubkey = undefined
+    }
+  }, [account])
+
+  useEffect(() => {
+    customEmojiService.init(userEmojiListEvent)
+  }, [userEmojiListEvent])
 
   const hasNostrLoginHash = () => {
     return window.location.hash && window.location.hash.startsWith('#nostr-login')
@@ -300,7 +395,8 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
   }
 
   const login = (signer: ISigner, act: TAccount) => {
-    storage.addAccount(act)
+    const newAccounts = storage.addAccount(act)
+    setAccounts(newAccounts)
     storage.switchAccount(act)
     setAccount({ pubkey: act.pubkey, signerType: act.signerType })
     setSigner(signer)
@@ -308,7 +404,8 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
   }
 
   const removeAccount = (act: TAccountPointer) => {
-    storage.removeAccount(act)
+    const newAccounts = storage.removeAccount(act)
+    setAccounts(newAccounts)
     if (account?.pubkey === act.pubkey) {
       setAccount(null)
       setSigner(null)
@@ -325,7 +422,7 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     await loginWithAccountPointer(act)
   }
 
-  const nsecLogin = async (nsecOrHex: string, password?: string) => {
+  const nsecLogin = async (nsecOrHex: string, password?: string, needSetup?: boolean) => {
     const nsecSigner = new NsecSigner()
     let privkey: Uint8Array
     if (nsecOrHex.startsWith('nsec')) {
@@ -342,9 +439,14 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     const pubkey = nsecSigner.login(privkey)
     if (password) {
       const ncryptsec = nip49.encrypt(privkey, password)
-      return login(nsecSigner, { pubkey, signerType: 'ncryptsec', ncryptsec })
+      login(nsecSigner, { pubkey, signerType: 'ncryptsec', ncryptsec })
+    } else {
+      login(nsecSigner, { pubkey, signerType: 'nsec', nsec: nip19.nsecEncode(privkey) })
     }
-    return login(nsecSigner, { pubkey, signerType: 'nsec', nsec: nip19.nsecEncode(privkey) })
+    if (needSetup) {
+      setupNewUser(nsecSigner)
+    }
+    return pubkey
   }
 
   const ncryptsecLogin = async (ncryptsec: string) => {
@@ -374,11 +476,7 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
       }
       return login(nip07Signer, { pubkey, signerType: 'nip-07' })
     } catch (err) {
-      toast({
-        title: 'Login failed',
-        description: (err as Error).message,
-        variant: 'destructive'
-      })
+      toast.error(t('Login failed') + ': ' + (err as Error).message)
       throw err
     }
   }
@@ -393,6 +491,22 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     bunkerUrl.searchParams.delete('secret')
     return login(bunkerSigner, {
       pubkey,
+      signerType: 'bunker',
+      bunker: bunkerUrl.toString(),
+      bunkerClientSecretKey: bunkerSigner.getClientSecretKey()
+    })
+  }
+
+  const nostrConnectionLogin = async (clientSecretKey: Uint8Array, connectionString: string) => {
+    const bunkerSigner = new NostrConnectionSigner(clientSecretKey, connectionString)
+    const loginResult = await bunkerSigner.login()
+    if (!loginResult.pubkey) {
+      throw new Error('Invalid bunker')
+    }
+    const bunkerUrl = new URL(loginResult.bunkerString!)
+    bunkerUrl.searchParams.delete('secret')
+    return login(bunkerSigner, {
+      pubkey: loginResult.pubkey,
       signerType: 'bunker',
       bunker: bunkerUrl.toString(),
       bunkerClientSecretKey: bunkerSigner.getClientSecretKey()
@@ -434,7 +548,7 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     } else if (account.signerType === 'bunker') {
       if (account.bunker && account.bunkerClientSecretKey) {
         const bunkerSigner = new BunkerSigner(account.bunkerClientSecretKey)
-        const pubkey = await bunkerSigner.login(account.bunker)
+        const pubkey = await bunkerSigner.login(account.bunker, false)
         if (!pubkey) {
           storage.removeAccount(account)
           return null
@@ -464,6 +578,19 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     return null
   }
 
+  const setupNewUser = async (signer: ISigner) => {
+    await Promise.allSettled([
+      client.publishEvent(BIG_RELAY_URLS, await signer.signEvent(createFollowListDraftEvent([]))),
+      client.publishEvent(BIG_RELAY_URLS, await signer.signEvent(createMuteListDraftEvent([]))),
+      client.publishEvent(
+        BIG_RELAY_URLS,
+        await signer.signEvent(
+          createRelayListDraftEvent(BIG_RELAY_URLS.map((url) => ({ url, scope: 'both' })))
+        )
+      )
+    ])
+  }
+
   const signEvent = async (draftEvent: TDraftEvent) => {
     const event = await signer?.signEvent(draftEvent)
     if (!event) {
@@ -474,62 +601,65 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
 
   const publish = async (
     draftEvent: TDraftEvent,
-    { specifiedRelayUrls }: { specifiedRelayUrls?: string[] } = {}
+    { minPow = 0, ...options }: TPublishOptions = {}
   ) => {
     if (!account || !signer || account.signerType === 'npub') {
       throw new Error('You need to login first')
     }
 
-    const additionalRelayUrls: string[] = []
-    if (
-      !specifiedRelayUrls?.length &&
-      [
-        kinds.ShortTextNote,
-        kinds.Reaction,
-        kinds.Repost,
-        ExtendedKind.COMMENT,
-        ExtendedKind.PICTURE
-      ].includes(draftEvent.kind)
-    ) {
-      const mentions: string[] = []
-      draftEvent.tags.forEach(([tagName, tagValue]) => {
-        if (
-          ['p', 'P'].includes(tagName) &&
-          !!tagValue &&
-          isValidPubkey(tagValue) &&
-          !mentions.includes(tagValue)
-        ) {
-          mentions.push(tagValue)
-        }
-      })
-      if (mentions.length > 0) {
-        const relayLists = await client.fetchRelayLists(mentions)
-        relayLists.forEach((relayList) => {
-          additionalRelayUrls.push(...relayList.read.slice(0, 4))
-        })
-      }
-    }
-    if ([kinds.RelayList, ExtendedKind.FAVORITE_RELAYS].includes(draftEvent.kind)) {
-      additionalRelayUrls.push(...BIG_RELAY_URLS)
+    const draft = JSON.parse(JSON.stringify(draftEvent)) as TDraftEvent
+    let event: VerifiedEvent
+    if (minPow > 0) {
+      const unsignedEvent = await minePow({ ...draft, pubkey: account.pubkey }, minPow)
+      event = await signEvent(unsignedEvent)
+    } else {
+      event = await signEvent(draft)
     }
 
-    const event = await signEvent(draftEvent)
-    const relays = specifiedRelayUrls?.length
-      ? specifiedRelayUrls
-      : (relayList?.write.slice(0, 10) ?? [])
-          .concat(Array.from(new Set(additionalRelayUrls)) ?? [])
-          .concat(client.getCurrentRelayUrls())
-    if (!relays.length) {
-      relays.push(...BIG_RELAY_URLS)
+    if (event.kind !== kinds.Application && event.pubkey !== account.pubkey) {
+      const eventAuthor = await client.fetchProfile(event.pubkey)
+      const result = confirm(
+        t(
+          'You are about to publish an event signed by [{{eventAuthorName}}]. You are currently logged in as [{{currentUsername}}]. Are you sure?',
+          { eventAuthorName: eventAuthor?.username, currentUsername: profile?.username }
+        )
+      )
+      if (!result) {
+        throw new Error(t('Cancelled'))
+      }
     }
+
+    const relays = await client.determineTargetRelays(event, options)
 
     await client.publishEvent(relays, event)
     return event
   }
 
-  const signHttpAuth = async (url: string, method: string) => {
+  const attemptDelete = async (targetEvent: Event) => {
+    if (!signer) {
+      throw new Error(t('You need to login first'))
+    }
+    if (account?.pubkey !== targetEvent.pubkey) {
+      throw new Error(t('You can only delete your own notes'))
+    }
+
+    const deletionRequest = await signEvent(createDeletionRequestDraftEvent(targetEvent))
+
+    const seenOn = client.getSeenEventRelayUrls(targetEvent.id)
+    const relays = await client.determineTargetRelays(targetEvent, {
+      specifiedRelayUrls: isProtectedEvent(targetEvent) ? seenOn : undefined,
+      additionalRelayUrls: seenOn
+    })
+
+    await client.publishEvent(relays, deletionRequest)
+
+    addDeletedEvent(targetEvent)
+    toast.success(t('Deletion request sent to {{count}} relays', { count: relays.length }))
+  }
+
+  const signHttpAuth = async (url: string, method: string, content = '') => {
     const event = await signEvent({
-      content: '',
+      content,
       kind: kinds.HTTPAuth,
       created_at: dayjs().unix(),
       tags: [
@@ -557,13 +687,13 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
 
   const updateRelayListEvent = async (relayListEvent: Event) => {
     const newRelayList = await indexedDb.putReplaceableEvent(relayListEvent)
-    setRelayList(getRelayListFromRelayListEvent(newRelayList))
+    setRelayList(getRelayListFromEvent(newRelayList))
   }
 
   const updateProfileEvent = async (profileEvent: Event) => {
     const newProfileEvent = await indexedDb.putReplaceableEvent(profileEvent)
     setProfileEvent(newProfileEvent)
-    setProfile(getProfileFromProfileEvent(newProfileEvent))
+    setProfile(getProfileFromEvent(newProfileEvent))
   }
 
   const updateFollowListEvent = async (followListEvent: Event) => {
@@ -571,14 +701,14 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     if (newFollowListEvent.id !== followListEvent.id) return
 
     setFollowListEvent(newFollowListEvent)
-    client.updateFollowListCache(newFollowListEvent)
+    await client.updateFollowListCache(newFollowListEvent)
   }
 
-  const updateMuteListEvent = async (muteListEvent: Event, tags: string[][]) => {
+  const updateMuteListEvent = async (muteListEvent: Event, privateTags: string[][]) => {
     const newMuteListEvent = await indexedDb.putReplaceableEvent(muteListEvent)
     if (newMuteListEvent.id !== muteListEvent.id) return
 
-    await indexedDb.putMuteDecryptedTags(muteListEvent.id, tags)
+    await indexedDb.putMuteDecryptedTags(muteListEvent.id, privateTags)
     setMuteListEvent(muteListEvent)
   }
 
@@ -596,7 +726,7 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     setFavoriteRelaysEvent(newFavoriteRelaysEvent)
   }
 
-  const updateNotificationsSeenAt = async () => {
+  const updateNotificationsSeenAt = async (skipPublish = false) => {
     if (!account) return
 
     const now = dayjs().unix()
@@ -604,7 +734,18 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
     setTimeout(() => {
       setNotificationsSeenAt(now)
     }, 5_000)
-    await publish(createSeenNotificationsAtDraftEvent())
+
+    // Prevent too frequent requests for signing seen notifications events
+    const lastPublishedSeenNotificationsAtEventAt =
+      lastPublishedSeenNotificationsAtEventAtMap.get(account.pubkey) ?? -1
+    if (
+      !skipPublish &&
+      (lastPublishedSeenNotificationsAtEventAt < 0 ||
+        now - lastPublishedSeenNotificationsAtEventAt > 10 * 60) // 10 minutes
+    ) {
+      await publish(createSeenNotificationsAtDraftEvent())
+      lastPublishedSeenNotificationsAtEventAtMap.set(account.pubkey, now)
+    }
   }
 
   return (
@@ -619,11 +760,10 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
         muteListEvent,
         bookmarkListEvent,
         favoriteRelaysEvent,
+        userEmojiListEvent,
         notificationsSeenAt,
         account,
-        accounts: storage
-          .getAccounts()
-          .map((act) => ({ pubkey: act.pubkey, signerType: act.signerType })),
+        accounts,
         nsec,
         ncryptsec,
         switchAccount,
@@ -631,9 +771,11 @@ export function NostrProvider({ children }: { children: React.ReactNode }) {
         ncryptsecLogin,
         nip07Login,
         bunkerLogin,
+        nostrConnectionLogin,
         npubLogin,
         removeAccount,
         publish,
+        attemptDelete,
         signHttpAuth,
         nip04Encrypt,
         nip04Decrypt,

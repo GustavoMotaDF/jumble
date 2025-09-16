@@ -1,8 +1,10 @@
 import { Skeleton } from '@/components/ui/skeleton'
+import { isMentioningMutedUsers } from '@/lib/event'
+import { useContentPolicy } from '@/providers/ContentPolicyProvider'
 import { useMuteList } from '@/providers/MuteListProvider'
 import { Event, kinds } from 'nostr-tools'
-import { useTranslation } from 'react-i18next'
-import GenericNoteCard from './GenericNoteCard'
+import { useMemo } from 'react'
+import MainNoteCard from './MainNoteCard'
 import RepostNoteCard from './RepostNoteCard'
 
 export default function NoteCard({
@@ -14,26 +16,28 @@ export default function NoteCard({
   className?: string
   filterMutedNotes?: boolean
 }) {
-  const { mutePubkeys } = useMuteList()
-  if (filterMutedNotes && mutePubkeys.includes(event.pubkey)) {
-    return null
-  }
+  const { mutePubkeySet } = useMuteList()
+  const { hideContentMentioningMutedUsers } = useContentPolicy()
+  const shouldHide = useMemo(() => {
+    if (filterMutedNotes && mutePubkeySet.has(event.pubkey)) {
+      return true
+    }
+    if (hideContentMentioningMutedUsers && isMentioningMutedUsers(event, mutePubkeySet)) {
+      return true
+    }
+    return false
+  }, [event, filterMutedNotes, mutePubkeySet])
+  if (shouldHide) return null
 
   if (event.kind === kinds.Repost) {
     return (
       <RepostNoteCard event={event} className={className} filterMutedNotes={filterMutedNotes} />
     )
   }
-  return <GenericNoteCard event={event} className={className} />
+  return <MainNoteCard event={event} className={className} />
 }
 
-export function NoteCardLoadingSkeleton({ isPictures }: { isPictures: boolean }) {
-  const { t } = useTranslation()
-
-  if (isPictures) {
-    return <div className="text-center text-sm text-muted-foreground">{t('loading...')}</div>
-  }
-
+export function NoteCardLoadingSkeleton() {
   return (
     <div className="px-4 py-3">
       <div className="flex items-center space-x-2">

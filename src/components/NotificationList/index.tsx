@@ -1,50 +1,77 @@
-import { Separator } from '@/components/ui/separator'
-import { Skeleton } from '@/components/ui/skeleton'
-import { BIG_RELAY_URLS, ExtendedKind } from '@/constants'
+import { BIG_RELAY_URLS, ExtendedKind, NOTIFICATION_LIST_STYLE } from '@/constants'
+import { compareEvents } from '@/lib/event'
 import { usePrimaryPage } from '@/PageManager'
 import { useNostr } from '@/providers/NostrProvider'
-import { useNoteStats } from '@/providers/NoteStatsProvider'
 import { useNotification } from '@/providers/NotificationProvider'
+import { useUserPreferences } from '@/providers/UserPreferencesProvider'
 import client from '@/services/client.service'
+import noteStatsService from '@/services/note-stats.service'
 import { TNotificationType } from '@/types'
 import dayjs from 'dayjs'
-import { Event, kinds } from 'nostr-tools'
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { NostrEvent, kinds, matchFilter } from 'nostr-tools'
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import PullToRefresh from 'react-simple-pull-to-refresh'
-import TabSwitcher from '../TabSwitch'
+import Tabs from '../Tabs'
 import { NotificationItem } from './NotificationItem'
+import { NotificationSkeleton } from './NotificationItem/Notification'
+import { isTouchDevice } from '@/lib/utils'
+import { RefreshButton } from '../RefreshButton'
 
 const LIMIT = 100
 const SHOW_COUNT = 30
 
 const NotificationList = forwardRef((_, ref) => {
   const { t } = useTranslation()
-  const { current } = usePrimaryPage()
+  const { current, display } = usePrimaryPage()
+  const active = useMemo(() => current === 'notifications' && display, [current, display])
   const { pubkey } = useNostr()
-  const { clearNewNotifications, getNotificationsSeenAt } = useNotification()
-  const { updateNoteStatsByEvents } = useNoteStats()
+  const { getNotificationsSeenAt } = useNotification()
+  const { notificationListStyle } = useUserPreferences()
   const [notificationType, setNotificationType] = useState<TNotificationType>('all')
   const [lastReadTime, setLastReadTime] = useState(0)
   const [refreshCount, setRefreshCount] = useState(0)
   const [timelineKey, setTimelineKey] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(true)
-  const [notifications, setNotifications] = useState<Event[]>([])
-  const [newNotifications, setNewNotifications] = useState<Event[]>([])
-  const [oldNotifications, setOldNotifications] = useState<Event[]>([])
+  const [notifications, setNotifications] = useState<NostrEvent[]>([])
+  const [visibleNotifications, setVisibleNotifications] = useState<NostrEvent[]>([])
   const [showCount, setShowCount] = useState(SHOW_COUNT)
   const [until, setUntil] = useState<number | undefined>(dayjs().unix())
+  const supportTouch = useMemo(() => isTouchDevice(), [])
+  const topRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const filterKinds = useMemo(() => {
     switch (notificationType) {
       case 'mentions':
-        return [kinds.ShortTextNote, ExtendedKind.COMMENT]
+        return [
+          kinds.ShortTextNote,
+          ExtendedKind.COMMENT,
+          ExtendedKind.VOICE_COMMENT,
+          ExtendedKind.POLL
+        ]
       case 'reactions':
-        return [kinds.Reaction, kinds.Repost]
+        return [kinds.Reaction, kinds.Repost, ExtendedKind.POLL_RESPONSE]
       case 'zaps':
         return [kinds.Zap]
       default:
-        return [kinds.ShortTextNote, kinds.Repost, kinds.Reaction, kinds.Zap, ExtendedKind.COMMENT]
+        return [
+          kinds.ShortTextNote,
+          kinds.Repost,
+          kinds.Reaction,
+          kinds.Zap,
+          ExtendedKind.COMMENT,
+          ExtendedKind.POLL_RESPONSE,
+          ExtendedKind.VOICE_COMMENT,
+          ExtendedKind.POLL
+        ]
     }
   }, [notificationType])
   useImperativeHandle(
@@ -56,6 +83,25 @@ const NotificationList = forwardRef((_, ref) => {
       }
     }),
     [loading]
+  )
+
+  const handleNewEvent = useCallback(
+    (event: NostrEvent) => {
+      if (event.pubkey === pubkey) return
+      setNotifications((oldEvents) => {
+        const index = oldEvents.findIndex((oldEvent) => compareEvents(oldEvent, event) <= 0)
+        if (index !== -1 && oldEvents[index].id === event.id) {
+          return oldEvents
+        }
+
+        noteStatsService.updateNoteStatsByEvents([event])
+        if (index === -1) {
+          return [...oldEvents, event]
+        }
+        return [...oldEvents.slice(0, index), event, ...oldEvents.slice(index)]
+      })
+    },
+    [pubkey]
   )
 
   useEffect(() => {
@@ -71,7 +117,6 @@ const NotificationList = forwardRef((_, ref) => {
       setNotifications([])
       setShowCount(SHOW_COUNT)
       setLastReadTime(getNotificationsSeenAt())
-      clearNewNotifications()
       const relayList = await client.fetchRelayList(pubkey)
 
       const { closer, timelineKey } = await client.subscribeTimeline(
@@ -93,21 +138,11 @@ const NotificationList = forwardRef((_, ref) => {
             if (eosed) {
               setLoading(false)
               setUntil(events.length > 0 ? events[events.length - 1].created_at - 1 : undefined)
-              updateNoteStatsByEvents(events)
+              noteStatsService.updateNoteStatsByEvents(events)
             }
           },
           onNew: (event) => {
-            if (event.pubkey === pubkey) return
-            setNotifications((oldEvents) => {
-              const index = oldEvents.findIndex(
-                (oldEvent) => oldEvent.created_at < event.created_at
-              )
-              if (index === -1) {
-                return [...oldEvents, event]
-              }
-              return [...oldEvents.slice(0, index), event, ...oldEvents.slice(index)]
-            })
-            updateNoteStatsByEvents([event])
+            handleNewEvent(event)
           }
         }
       )
@@ -122,16 +157,33 @@ const NotificationList = forwardRef((_, ref) => {
   }, [pubkey, refreshCount, filterKinds, current])
 
   useEffect(() => {
-    const visibleNotifications = notifications.slice(0, showCount)
-    const index = visibleNotifications.findIndex((event) => event.created_at <= lastReadTime)
-    if (index === -1) {
-      setNewNotifications(visibleNotifications)
-      setOldNotifications([])
-    } else {
-      setNewNotifications(visibleNotifications.slice(0, index))
-      setOldNotifications(visibleNotifications.slice(index))
+    if (!active || !pubkey) return
+
+    const handler = (data: Event) => {
+      const customEvent = data as CustomEvent<NostrEvent>
+      const evt = customEvent.detail
+      if (
+        matchFilter(
+          {
+            kinds: filterKinds,
+            '#p': [pubkey]
+          },
+          evt
+        )
+      ) {
+        handleNewEvent(evt)
+      }
     }
-  }, [notifications, lastReadTime, showCount])
+
+    client.addEventListener('newEvent', handler)
+    return () => {
+      client.removeEventListener('newEvent', handler)
+    }
+  }, [pubkey, active, filterKinds, handleNewEvent])
+
+  useEffect(() => {
+    setVisibleNotifications(notifications.slice(0, showCount))
+  }, [notifications, showCount])
 
   useEffect(() => {
     const options = {
@@ -187,9 +239,37 @@ const NotificationList = forwardRef((_, ref) => {
     }
   }, [pubkey, timelineKey, until, loading, showCount, notifications])
 
+  const refresh = () => {
+    topRef.current?.scrollIntoView({ behavior: 'instant', block: 'start' })
+    setTimeout(() => {
+      setRefreshCount((count) => count + 1)
+    }, 500)
+  }
+
+  const list = (
+    <div className={notificationListStyle === NOTIFICATION_LIST_STYLE.COMPACT ? 'pt-2' : ''}>
+      {visibleNotifications.map((notification) => (
+        <NotificationItem
+          key={notification.id}
+          notification={notification}
+          isNew={notification.created_at > lastReadTime}
+        />
+      ))}
+      <div className="text-center text-sm text-muted-foreground">
+        {until || loading ? (
+          <div ref={bottomRef}>
+            <NotificationSkeleton />
+          </div>
+        ) : (
+          t('no more notifications')
+        )}
+      </div>
+    </div>
+  )
+
   return (
     <div>
-      <TabSwitcher
+      <Tabs
         value={notificationType}
         tabs={[
           { value: 'all', label: 'All' },
@@ -201,43 +281,22 @@ const NotificationList = forwardRef((_, ref) => {
           setShowCount(SHOW_COUNT)
           setNotificationType(type as TNotificationType)
         }}
+        options={!supportTouch ? <RefreshButton onClick={() => refresh()} /> : null}
       />
-      <PullToRefresh
-        onRefresh={async () => {
-          setRefreshCount((count) => count + 1)
-          await new Promise((resolve) => setTimeout(resolve, 1000))
-        }}
-        pullingContent=""
-      >
-        <div className="px-4 pt-2">
-          {newNotifications.map((notification) => (
-            <NotificationItem key={notification.id} notification={notification} isNew />
-          ))}
-          {!!newNotifications.length && (
-            <div className="relative my-2">
-              <Separator />
-              <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-background px-2 text-xs text-muted-foreground">
-                {t('Earlier notifications')}
-              </span>
-            </div>
-          )}
-          {oldNotifications.map((notification) => (
-            <NotificationItem key={notification.id} notification={notification} />
-          ))}
-          <div className="text-center text-sm text-muted-foreground">
-            {until || loading ? (
-              <div ref={bottomRef}>
-                <div className="flex gap-2 items-center h-11 py-2">
-                  <Skeleton className="w-7 h-7 rounded-full" />
-                  <Skeleton className="h-6 flex-1 w-0" />
-                </div>
-              </div>
-            ) : (
-              t('no more notifications')
-            )}
-          </div>
-        </div>
-      </PullToRefresh>
+      <div ref={topRef} className="scroll-mt-[calc(6rem+1px)]" />
+      {supportTouch ? (
+        <PullToRefresh
+          onRefresh={async () => {
+            refresh()
+            await new Promise((resolve) => setTimeout(resolve, 1000))
+          }}
+          pullingContent=""
+        >
+          {list}
+        </PullToRefresh>
+      ) : (
+        list
+      )}
     </div>
   )
 })

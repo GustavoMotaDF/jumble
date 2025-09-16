@@ -1,5 +1,5 @@
-import { BIG_RELAY_URLS, CODY_PUBKEY } from '@/constants'
-import { extractZapInfoFromReceipt } from '@/lib/event'
+import { BIG_RELAY_URLS, CODY_PUBKEY, JUMBLE_PUBKEY } from '@/constants'
+import { getZapInfoFromEvent } from '@/lib/event-metadata'
 import { TProfile } from '@/types'
 import {
   init,
@@ -11,13 +11,15 @@ import { Invoice } from '@getalby/lightning-tools'
 import { bech32 } from '@scure/base'
 import { WebLNProvider } from '@webbtc/webln-types'
 import dayjs from 'dayjs'
-import { Filter, kinds } from 'nostr-tools'
+import { Filter, kinds, NostrEvent } from 'nostr-tools'
 import { SubCloser } from 'nostr-tools/abstract-pool'
 import { makeZapRequest } from 'nostr-tools/nip57'
 import { utf8Decoder } from 'nostr-tools/utils'
 import client from './client.service'
 
 export type TRecentSupporter = { pubkey: string; amount: number; comment?: string }
+
+const OFFICIAL_PUBKEYS = [JUMBLE_PUBKEY, CODY_PUBKEY]
 
 class LightningService {
   static instance: LightningService
@@ -43,15 +45,18 @@ class LightningService {
 
   async zap(
     sender: string,
-    recipient: string,
+    recipientOrEvent: string | NostrEvent,
     sats: number,
     comment: string,
-    eventId?: string,
     closeOuterModel?: () => void
   ): Promise<{ preimage: string; invoice: string } | null> {
     if (!client.signer) {
       throw new Error('You need to be logged in to zap')
     }
+    const { recipient, event } =
+      typeof recipientOrEvent === 'string'
+        ? { recipient: recipientOrEvent }
+        : { recipient: recipientOrEvent.pubkey, event: recipientOrEvent }
 
     const [profile, receiptRelayList, senderRelayList] = await Promise.all([
       client.fetchProfile(recipient, true),
@@ -70,8 +75,7 @@ class LightningService {
     const { callback, lnurl } = zapEndpoint
     const amount = sats * 1000
     const zapRequestDraft = makeZapRequest({
-      profile: recipient,
-      event: eventId ?? null,
+      ...(event ? { event } : { pubkey: recipient }),
       amount,
       relays: receiptRelayList.read
         .slice(0, 4)
@@ -133,15 +137,15 @@ class LightningService {
           '#p': [recipient],
           since: dayjs().subtract(1, 'minute').unix()
         }
-        if (eventId) {
-          filter['#e'] = [eventId]
+        if (event) {
+          filter['#e'] = [event.id]
         }
         subCloser = client.subscribe(
           senderRelayList.write.concat(BIG_RELAY_URLS).slice(0, 4),
           filter,
           {
             onevent: (evt) => {
-              const info = extractZapInfoFromReceipt(evt)
+              const info = getZapInfoFromEvent(evt)
               if (!info) return
 
               if (info.invoice === pr) {
@@ -154,6 +158,30 @@ class LightningService {
     })
   }
 
+  async payInvoice(
+    invoice: string,
+    closeOuterModel?: () => void
+  ): Promise<{ preimage: string; invoice: string } | null> {
+    if (this.provider) {
+      const { preimage } = await this.provider.sendPayment(invoice)
+      closeOuterModel?.()
+      return { preimage, invoice: invoice }
+    }
+
+    return new Promise((resolve) => {
+      closeOuterModel?.()
+      launchPaymentModal({
+        invoice: invoice,
+        onPaid: (response) => {
+          resolve({ preimage: response.preimage, invoice: invoice })
+        },
+        onCancelled: () => {
+          resolve(null)
+        }
+      })
+    })
+  }
+
   async fetchRecentSupporters() {
     if (this.recentSupportersCache) {
       return this.recentSupportersCache
@@ -162,14 +190,14 @@ class LightningService {
     const events = await client.fetchEvents(relayList.read.slice(0, 4), {
       authors: ['79f00d3f5a19ec806189fcab03c1be4ff81d18ee4f653c88fac41fe03570f432'], // alby
       kinds: [kinds.Zap],
-      '#p': [CODY_PUBKEY],
+      '#p': OFFICIAL_PUBKEYS,
       since: dayjs().subtract(1, 'month').unix()
     })
     events.sort((a, b) => b.created_at - a.created_at)
     const map = new Map<string, { pubkey: string; amount: number; comment?: string }>()
     events.forEach((event) => {
-      const info = extractZapInfoFromReceipt(event)
-      if (!info || info.eventId || !info.senderPubkey || info.senderPubkey === CODY_PUBKEY) return
+      const info = getZapInfoFromEvent(event)
+      if (!info || !info.senderPubkey || OFFICIAL_PUBKEYS.includes(info.senderPubkey)) return
 
       const { amount, comment, senderPubkey } = info
       const item = map.get(senderPubkey)
@@ -180,7 +208,9 @@ class LightningService {
         if (!item.comment && comment) item.comment = comment
       }
     })
-    this.recentSupportersCache = Array.from(map.values()).sort((a, b) => b.amount - a.amount)
+    this.recentSupportersCache = Array.from(map.values())
+      .filter((item) => item.amount >= 1000)
+      .sort((a, b) => b.amount - a.amount)
     return this.recentSupportersCache
   }
 
@@ -200,7 +230,7 @@ class LightningService {
         const [name, domain] = profile.lightningAddress.split('@')
         lnurl = new URL(`/.well-known/lnurlp/${name}`, `https://${domain}`).toString()
       } else {
-        const { words } = bech32.decode(profile.lightningAddress, 1000)
+        const { words } = bech32.decode(profile.lightningAddress as any, 1000)
         const data = bech32.fromWords(words)
         lnurl = utf8Decoder.decode(data)
       }

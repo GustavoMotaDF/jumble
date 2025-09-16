@@ -1,8 +1,8 @@
 import Sidebar from '@/components/Sidebar'
-import { Separator } from '@/components/ui/separator'
-import { cn, isAndroid } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import NoteListPage from '@/pages/primary/NoteListPage'
 import HomePage from '@/pages/secondary/HomePage'
+import { CurrentRelaysProvider } from '@/providers/CurrentRelaysProvider'
 import { TPageRef } from '@/types'
 import {
   cloneElement,
@@ -12,11 +12,18 @@ import {
   RefObject,
   useContext,
   useEffect,
+  useRef,
   useState
 } from 'react'
+import BottomNavigationBar from './components/BottomNavigationBar'
+import TooManyRelaysAlertDialog from './components/TooManyRelaysAlertDialog'
+import { normalizeUrl } from './lib/url'
 import ExplorePage from './pages/primary/ExplorePage'
 import MePage from './pages/primary/MePage'
 import NotificationListPage from './pages/primary/NotificationListPage'
+import ProfilePage from './pages/primary/ProfilePage'
+import RelayPage from './pages/primary/RelayPage'
+import SearchPage from './pages/primary/SearchPage'
 import { NotificationProvider } from './providers/NotificationProvider'
 import { useScreenSize } from './providers/ScreenSizeProvider'
 import { routes } from './routes'
@@ -25,8 +32,9 @@ import modalManager from './services/modal-manager.service'
 export type TPrimaryPageName = keyof typeof PRIMARY_PAGE_MAP
 
 type TPrimaryPageContext = {
-  navigate: (page: TPrimaryPageName) => void
+  navigate: (page: TPrimaryPageName, props?: object) => void
   current: TPrimaryPageName | null
+  display: boolean
 }
 
 type TSecondaryPageContext = {
@@ -46,14 +54,20 @@ const PRIMARY_PAGE_REF_MAP = {
   home: createRef<TPageRef>(),
   explore: createRef<TPageRef>(),
   notifications: createRef<TPageRef>(),
-  me: createRef<TPageRef>()
+  me: createRef<TPageRef>(),
+  profile: createRef<TPageRef>(),
+  relay: createRef<TPageRef>(),
+  search: createRef<TPageRef>()
 }
 
 const PRIMARY_PAGE_MAP = {
   home: <NoteListPage ref={PRIMARY_PAGE_REF_MAP.home} />,
   explore: <ExplorePage ref={PRIMARY_PAGE_REF_MAP.explore} />,
   notifications: <NotificationListPage ref={PRIMARY_PAGE_REF_MAP.notifications} />,
-  me: <MePage ref={PRIMARY_PAGE_REF_MAP.me} />
+  me: <MePage ref={PRIMARY_PAGE_REF_MAP.me} />,
+  profile: <ProfilePage ref={PRIMARY_PAGE_REF_MAP.profile} />,
+  relay: <RelayPage ref={PRIMARY_PAGE_REF_MAP.relay} />,
+  search: <SearchPage ref={PRIMARY_PAGE_REF_MAP.search} />
 }
 
 const PrimaryPageContext = createContext<TPrimaryPageContext | undefined>(undefined)
@@ -79,7 +93,7 @@ export function useSecondaryPage() {
 export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
   const [currentPrimaryPage, setCurrentPrimaryPage] = useState<TPrimaryPageName>('home')
   const [primaryPages, setPrimaryPages] = useState<
-    { name: TPrimaryPageName; element: ReactNode }[]
+    { name: TPrimaryPageName; element: ReactNode; props?: any }[]
   >([
     {
       name: 'home',
@@ -87,17 +101,29 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
     }
   ])
   const [secondaryStack, setSecondaryStack] = useState<TStackItem[]>([])
-  const [isShared, setIsShared] = useState(false)
   const { isSmallScreen } = useScreenSize()
+  const ignorePopStateRef = useRef(false)
 
   useEffect(() => {
+    if (['/npub1', '/nprofile1'].some((prefix) => window.location.pathname.startsWith(prefix))) {
+      window.history.replaceState(
+        null,
+        '',
+        '/users' + window.location.pathname + window.location.search + window.location.hash
+      )
+    } else if (
+      ['/note1', '/nevent1', '/naddr1'].some((prefix) =>
+        window.location.pathname.startsWith(prefix)
+      )
+    ) {
+      window.history.replaceState(
+        null,
+        '',
+        '/notes' + window.location.pathname + window.location.search + window.location.hash
+      )
+    }
+    window.history.pushState(null, '', window.location.href)
     if (window.location.pathname !== '/') {
-      if (
-        ['/users', '/notes', '/relays'].some((path) => window.location.pathname.startsWith(path)) &&
-        !history.state
-      ) {
-        setIsShared(true)
-      }
       const url = window.location.pathname + window.location.search + window.location.hash
       setSecondaryStack((prevStack) => {
         if (isCurrentPage(prevStack, url)) return prevStack
@@ -113,11 +139,29 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
         }
         return newStack
       })
+    } else {
+      const searchParams = new URLSearchParams(window.location.search)
+      const r = searchParams.get('r')
+      if (r) {
+        const url = normalizeUrl(r)
+        if (url) {
+          navigatePrimaryPage('relay', { url })
+        }
+      }
     }
 
     const onPopState = (e: PopStateEvent) => {
+      if (ignorePopStateRef.current) {
+        ignorePopStateRef.current = false
+        return
+      }
+
       const closeModal = modalManager.pop()
-      if (closeModal) return
+      if (closeModal) {
+        ignorePopStateRef.current = true
+        window.history.forward()
+        return
+      }
 
       let state = e.state as { index: number; url: string } | null
       setSecondaryStack((pre) => {
@@ -172,35 +216,29 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
       })
     }
 
-    const onLeave = (event: BeforeUnloadEvent) => {
-      // Cancel the event as stated by the standard.
-      event.preventDefault()
-      // Chrome requires returnValue to be set.
-      event.returnValue = ''
-    }
-
     window.addEventListener('popstate', onPopState)
-
-    if (isAndroid()) {
-      window.addEventListener('beforeunload', onLeave)
-    }
 
     return () => {
       window.removeEventListener('popstate', onPopState)
-
-      if (isAndroid()) {
-        window.removeEventListener('beforeunload', onLeave)
-      }
     }
   }, [])
 
-  const navigatePrimaryPage = (page: TPrimaryPageName) => {
-    const exists = primaryPages.find((p) => p.name === page)
-    if (!exists) {
-      setPrimaryPages((prev) => [...prev, { name: page, element: PRIMARY_PAGE_MAP[page] }])
-    }
+  const navigatePrimaryPage = (page: TPrimaryPageName, props?: any) => {
+    const needScrollToTop = page === currentPrimaryPage
+    setPrimaryPages((prev) => {
+      const exists = prev.find((p) => p.name === page)
+      if (exists && props) {
+        exists.props = props
+        return [...prev]
+      } else if (!exists) {
+        return [...prev, { name: page, element: PRIMARY_PAGE_MAP[page], props }]
+      }
+      return prev
+    })
     setCurrentPrimaryPage(page)
-    PRIMARY_PAGE_REF_MAP[page].current?.scrollToTop()
+    if (needScrollToTop) {
+      PRIMARY_PAGE_REF_MAP[page].current?.scrollToTop('smooth')
+    }
     if (isSmallScreen) {
       clearSecondaryPages()
     }
@@ -211,7 +249,7 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
       if (isCurrentPage(prevStack, url)) {
         const currentItem = prevStack[prevStack.length - 1]
         if (currentItem?.ref?.current) {
-          currentItem.ref.current.scrollToTop()
+          currentItem.ref.current.scrollToTop('instant')
         }
         return prevStack
       }
@@ -228,7 +266,6 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
     if (secondaryStack.length === 1) {
       // back to home page
       window.history.replaceState(null, '', '/')
-      setIsShared(false)
       setSecondaryStack([])
     } else {
       window.history.go(-1)
@@ -245,7 +282,8 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
       <PrimaryPageContext.Provider
         value={{
           navigate: navigatePrimaryPage,
-          current: secondaryStack.length === 0 ? currentPrimaryPage : null
+          current: currentPrimaryPage,
+          display: secondaryStack.length === 0
         }}
       >
         <SecondaryPageContext.Provider
@@ -257,62 +295,34 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
               : 0
           }}
         >
-          <NotificationProvider>
-            {!!secondaryStack.length &&
-              secondaryStack.map((item, index) => (
+          <CurrentRelaysProvider>
+            <NotificationProvider>
+              {!!secondaryStack.length &&
+                secondaryStack.map((item, index) => (
+                  <div
+                    key={item.index}
+                    style={{
+                      display: index === secondaryStack.length - 1 ? 'block' : 'none'
+                    }}
+                  >
+                    {item.component}
+                  </div>
+                ))}
+              {primaryPages.map(({ name, element, props }) => (
                 <div
-                  key={item.index}
+                  key={name}
                   style={{
-                    display: index === secondaryStack.length - 1 ? 'block' : 'none'
+                    display:
+                      secondaryStack.length === 0 && currentPrimaryPage === name ? 'block' : 'none'
                   }}
                 >
-                  {item.component}
+                  {props ? cloneElement(element as React.ReactElement, props) : element}
                 </div>
               ))}
-            {primaryPages.map(({ name, element }) => (
-              <div
-                key={name}
-                style={{
-                  display:
-                    secondaryStack.length === 0 && currentPrimaryPage === name ? 'block' : 'none'
-                }}
-              >
-                {element}
-              </div>
-            ))}
-          </NotificationProvider>
-        </SecondaryPageContext.Provider>
-      </PrimaryPageContext.Provider>
-    )
-  }
-
-  if (isShared && secondaryStack.length > 0) {
-    return (
-      <PrimaryPageContext.Provider
-        value={{
-          navigate: navigatePrimaryPage,
-          current: currentPrimaryPage
-        }}
-      >
-        <SecondaryPageContext.Provider
-          value={{
-            push: pushSecondaryPage,
-            pop: popSecondaryPage,
-            currentIndex: secondaryStack[secondaryStack.length - 1].index
-          }}
-        >
-          <NotificationProvider>
-            <div className="h-screen overflow-hidden max-w-4xl mx-auto border-x">
-              {secondaryStack.map((item, index) => (
-                <div
-                  key={item.index}
-                  style={{ display: index === secondaryStack.length - 1 ? 'block' : 'none' }}
-                >
-                  {item.component}
-                </div>
-              ))}
-            </div>
-          </NotificationProvider>
+              <BottomNavigationBar />
+              <TooManyRelaysAlertDialog />
+            </NotificationProvider>
+          </CurrentRelaysProvider>
         </SecondaryPageContext.Provider>
       </PrimaryPageContext.Provider>
     )
@@ -322,7 +332,8 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
     <PrimaryPageContext.Provider
       value={{
         navigate: navigatePrimaryPage,
-        current: currentPrimaryPage
+        current: currentPrimaryPage,
+        display: true
       }}
     >
       <SecondaryPageContext.Provider
@@ -332,40 +343,47 @@ export function PageManager({ maxStackSize = 5 }: { maxStackSize?: number }) {
           currentIndex: secondaryStack.length ? secondaryStack[secondaryStack.length - 1].index : 0
         }}
       >
-        <NotificationProvider>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <Separator orientation="vertical" />
-            <div className="grid grid-cols-2 w-full">
-              <div className="flex border-r">
-                {primaryPages.map(({ name, element }) => (
+        <CurrentRelaysProvider>
+          <NotificationProvider>
+            <div className="flex h-[var(--vh)] overflow-hidden bg-surface-background">
+              <Sidebar />
+              <div className="grid grid-cols-2 gap-2 w-full pr-2 py-2">
+                <div className="rounded-lg shadow-lg bg-background overflow-hidden">
+                  {primaryPages.map(({ name, element, props }) => (
+                    <div
+                      key={name}
+                      className="flex flex-col h-full w-full"
+                      style={{
+                        display: currentPrimaryPage === name ? 'block' : 'none'
+                      }}
+                    >
+                      {props ? cloneElement(element as React.ReactElement, props) : element}
+                    </div>
+                  ))}
+                </div>
+                <div className="rounded-lg shadow-lg bg-background overflow-hidden">
+                  {secondaryStack.map((item, index) => (
+                    <div
+                      key={item.index}
+                      className="flex flex-col h-full w-full"
+                      style={{ display: index === secondaryStack.length - 1 ? 'block' : 'none' }}
+                    >
+                      {item.component}
+                    </div>
+                  ))}
                   <div
-                    key={name}
+                    key="home"
                     className="w-full"
-                    style={{
-                      display: currentPrimaryPage === name ? 'block' : 'none'
-                    }}
+                    style={{ display: secondaryStack.length === 0 ? 'block' : 'none' }}
                   >
-                    {element}
+                    <HomePage />
                   </div>
-                ))}
-              </div>
-              <div>
-                {secondaryStack.map((item, index) => (
-                  <div
-                    key={item.index}
-                    style={{ display: index === secondaryStack.length - 1 ? 'block' : 'none' }}
-                  >
-                    {item.component}
-                  </div>
-                ))}
-                <div key="home" style={{ display: secondaryStack.length === 0 ? 'block' : 'none' }}>
-                  <HomePage />
                 </div>
               </div>
             </div>
-          </div>
-        </NotificationProvider>
+            <TooManyRelaysAlertDialog />
+          </NotificationProvider>
+        </CurrentRelaysProvider>
       </SecondaryPageContext.Provider>
     </PrimaryPageContext.Provider>
   )

@@ -1,40 +1,36 @@
 import { usePrimaryPage, useSecondaryPage } from '@/PageManager'
 import RelaySimpleInfo from '@/components/RelaySimpleInfo'
 import { Button } from '@/components/ui/button'
+import { RECOMMENDED_RELAYS } from '@/constants'
 import SecondaryPageLayout from '@/layouts/SecondaryPageLayout'
 import { toRelay } from '@/lib/link'
 import relayInfoService from '@/services/relay-info.service'
-import { TNip66RelayInfo } from '@/types'
-import { ArrowRight, RefreshCcw, Server } from 'lucide-react'
-import { forwardRef, useCallback, useEffect, useState } from 'react'
+import { TRelayInfo } from '@/types'
+import { ArrowRight, Server } from 'lucide-react'
+import { forwardRef, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 const HomePage = forwardRef(({ index }: { index?: number }, ref) => {
   const { t } = useTranslation()
   const { navigate } = usePrimaryPage()
   const { push } = useSecondaryPage()
-  const [randomRelayInfos, setRandomRelayInfos] = useState<TNip66RelayInfo[]>([])
-
-  const refresh = useCallback(async () => {
-    const relayInfos = await relayInfoService.getRandomRelayInfos(10)
-    const relayUrls = new Set<string>()
-    const uniqueRelayInfos = relayInfos.filter((relayInfo) => {
-      if (relayUrls.has(relayInfo.url)) {
-        return false
-      }
-      relayUrls.add(relayInfo.url)
-      return true
-    })
-    setRandomRelayInfos(uniqueRelayInfos)
-  }, [])
+  const [recommendedRelayInfos, setRecommendedRelayInfos] = useState<TRelayInfo[]>([])
 
   useEffect(() => {
-    refresh()
+    const init = async () => {
+      try {
+        const relays = await relayInfoService.getRelayInfos(RECOMMENDED_RELAYS)
+        setRecommendedRelayInfos(relays.filter(Boolean) as TRelayInfo[])
+      } catch (error) {
+        console.error('Failed to fetch recommended relays:', error)
+      }
+    }
+    init()
   }, [])
 
-  if (!randomRelayInfos.length) {
+  if (!recommendedRelayInfos.length) {
     return (
-      <SecondaryPageLayout ref={ref} index={index} hideBackButton>
+      <SecondaryPageLayout ref={ref} index={index} hideBackButton hideTitlebarBottomBorder>
         <div className="text-muted-foreground w-full h-screen flex items-center justify-center">
           {t('Welcome! 🥳')}
         </div>
@@ -49,23 +45,18 @@ const HomePage = forwardRef(({ index }: { index?: number }, ref) => {
       title={
         <>
           <Server />
-          <div>{t('Random Relays')}</div>
+          <div>{t('Recommended relays')}</div>
         </>
       }
-      controls={
-        <Button variant="ghost" className="h-10 [&_svg]:size-3" onClick={() => refresh()}>
-          <RefreshCcw />
-          <div>{t('randomRelaysRefresh')}</div>
-        </Button>
-      }
       hideBackButton
+      hideTitlebarBottomBorder
     >
-      <div className="px-4">
+      <div className="px-4 pt-2">
         <div className="grid grid-cols-2 gap-3">
-          {randomRelayInfos.map((relayInfo) => (
+          {recommendedRelayInfos.map((relayInfo) => (
             <RelaySimpleInfo
               key={relayInfo.url}
-              className="clickable h-auto p-3 rounded-lg border"
+              className="clickable h-auto px-4 py-3 rounded-lg border"
               relayInfo={relayInfo}
               onClick={(e) => {
                 e.stopPropagation()

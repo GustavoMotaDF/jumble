@@ -1,28 +1,39 @@
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { useFetchRelayInfo } from '@/hooks'
 import { normalizeHttpUrl } from '@/lib/url'
-import { GitBranch, Mail, SquareCode } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Check, Copy, GitBranch, Link, Mail, SquareCode } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+import PostEditor from '../PostEditor'
 import RelayBadges from '../RelayBadges'
 import RelayIcon from '../RelayIcon'
+import SaveRelayDropdownMenu from '../SaveRelayDropdownMenu'
 import UserAvatar from '../UserAvatar'
 import Username from '../Username'
 
-export default function RelayInfo({ url }: { url: string }) {
+export default function RelayInfo({ url, className }: { url: string; className?: string }) {
   const { t } = useTranslation()
   const { relayInfo, isFetching } = useFetchRelayInfo(url)
+  const [open, setOpen] = useState(false)
+
   if (isFetching || !relayInfo) {
     return null
   }
 
   return (
-    <div className="px-4 space-y-4 mb-2">
+    <div className={cn('px-4 space-y-4 mb-2', className)}>
       <div className="space-y-2">
-        <div className="flex gap-2 items-center">
-          <RelayIcon url={url} className="w-8 h-8" />
-          <div className="text-2xl font-semibold truncate select-text">
-            {relayInfo.name || relayInfo.shortUrl}
+        <div className="flex items-center gap-2 justify-between">
+          <div className="flex gap-2 items-center truncate">
+            <RelayIcon url={url} className="w-8 h-8" />
+            <div className="text-2xl font-semibold truncate select-text">
+              {relayInfo.name || relayInfo.shortUrl}
+            </div>
           </div>
+          <RelayControls url={relayInfo.url} />
         </div>
         <RelayBadges relayInfo={relayInfo} />
         {!!relayInfo.tags?.length && (
@@ -38,29 +49,18 @@ export default function RelayInfo({ url }: { url: string }) {
           </div>
         )}
       </div>
-      {!!relayInfo.supported_nips?.length && (
-        <div className="space-y-2">
-          <div className="text-sm font-semibold text-muted-foreground">{t('Supported NIPs')}</div>
-          <div className="flex flex-wrap gap-2">
-            {relayInfo.supported_nips
-              .sort((a, b) => a - b)
-              .map((nip) => (
-                <Badge
-                  key={nip}
-                  variant="secondary"
-                  className="clickable"
-                  onClick={() =>
-                    window.open(
-                      `https://github.com/nostr-protocol/nips/blob/master/${formatNip(nip)}.md`
-                    )
-                  }
-                >
-                  {formatNip(nip)}
-                </Badge>
-              ))}
-          </div>
-        </div>
-      )}
+
+      <div className="space-y-2">
+        <div className="text-sm font-semibold text-muted-foreground">{t('Homepage')}:</div>
+        <a
+          href={normalizeHttpUrl(relayInfo.url)}
+          target="_blank"
+          className="hover:underline text-primary select-text"
+        >
+          {normalizeHttpUrl(relayInfo.url)}
+        </a>
+      </div>
+
       {relayInfo.payments_url && (
         <div className="space-y-2">
           <div className="text-sm font-semibold text-muted-foreground">{t('Payment page')}:</div>
@@ -111,6 +111,10 @@ export default function RelayInfo({ url }: { url: string }) {
           </div>
         )}
       </div>
+      <Button variant="secondary" className="w-full" onClick={() => setOpen(true)}>
+        {t('Share something on this Relay')}
+      </Button>
+      <PostEditor open={open} setOpen={setOpen} openFrom={[relayInfo.url]} />
     </div>
   )
 }
@@ -120,9 +124,32 @@ function formatSoftware(software: string) {
   return parts[parts.length - 1]
 }
 
-function formatNip(nip: number) {
-  if (nip < 10) {
-    return `0${nip}`
+function RelayControls({ url }: { url: string }) {
+  const [copiedUrl, setCopiedUrl] = useState(false)
+  const [copiedShareableUrl, setCopiedShareableUrl] = useState(false)
+
+  const handleCopyUrl = () => {
+    navigator.clipboard.writeText(url)
+    setCopiedUrl(true)
+    setTimeout(() => setCopiedUrl(false), 2000)
   }
-  return `${nip}`
+
+  const handleCopyShareableUrl = () => {
+    navigator.clipboard.writeText(`https://jumble.social/?r=${url}`)
+    setCopiedShareableUrl(true)
+    toast.success('Shareable URL copied to clipboard')
+    setTimeout(() => setCopiedShareableUrl(false), 2000)
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <Button variant="ghost" size="titlebar-icon" onClick={handleCopyShareableUrl}>
+        {copiedShareableUrl ? <Check /> : <Link />}
+      </Button>
+      <Button variant="ghost" size="titlebar-icon" onClick={handleCopyUrl}>
+        {copiedUrl ? <Check /> : <Copy />}
+      </Button>
+      <SaveRelayDropdownMenu urls={[url]} atTitlebar />
+    </div>
+  )
 }

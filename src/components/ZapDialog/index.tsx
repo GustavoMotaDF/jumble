@@ -15,15 +15,16 @@ import {
 } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { useToast } from '@/hooks'
 import { useNostr } from '@/providers/NostrProvider'
-import { useNoteStats } from '@/providers/NoteStatsProvider'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
 import { useZap } from '@/providers/ZapProvider'
 import lightning from '@/services/lightning.service'
+import noteStatsService from '@/services/note-stats.service'
 import { Loader } from 'lucide-react'
-import { Dispatch, SetStateAction, useEffect, useRef, useState } from 'react'
+import { NostrEvent } from 'nostr-tools'
+import { Dispatch, SetStateAction, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import UserAvatar from '../UserAvatar'
 import Username from '../Username'
 
@@ -31,14 +32,14 @@ export default function ZapDialog({
   open,
   setOpen,
   pubkey,
-  eventId,
+  event,
   defaultAmount,
   defaultComment
 }: {
   open: boolean
   setOpen: Dispatch<SetStateAction<boolean>>
   pubkey: string
-  eventId?: string
+  event?: NostrEvent
   defaultAmount?: number
   defaultComment?: string
 }) {
@@ -87,7 +88,7 @@ export default function ZapDialog({
             open={open}
             setOpen={setOpen}
             recipient={pubkey}
-            eventId={eventId}
+            event={event}
             defaultAmount={defaultAmount}
             defaultComment={defaultComment}
           />
@@ -110,7 +111,7 @@ export default function ZapDialog({
           open={open}
           setOpen={setOpen}
           recipient={pubkey}
-          eventId={eventId}
+          event={event}
           defaultAmount={defaultAmount}
           defaultComment={defaultComment}
         />
@@ -122,25 +123,56 @@ export default function ZapDialog({
 function ZapDialogContent({
   setOpen,
   recipient,
-  eventId,
+  event,
   defaultAmount,
   defaultComment
 }: {
   open: boolean
   setOpen: Dispatch<SetStateAction<boolean>>
   recipient: string
-  eventId?: string
+  event?: NostrEvent
   defaultAmount?: number
   defaultComment?: string
 }) {
-  const { t } = useTranslation()
-  const { toast } = useToast()
+  const { t, i18n } = useTranslation()
   const { pubkey } = useNostr()
   const { defaultZapSats, defaultZapComment } = useZap()
-  const { addZap } = useNoteStats()
   const [sats, setSats] = useState(defaultAmount ?? defaultZapSats)
   const [comment, setComment] = useState(defaultComment ?? defaultZapComment)
   const [zapping, setZapping] = useState(false)
+  const presetAmounts = useMemo(() => {
+    if (i18n.language.startsWith('zh')) {
+      return [
+        { display: '21', val: 21 },
+        { display: '66', val: 66 },
+        { display: '210', val: 210 },
+        { display: '666', val: 666 },
+        { display: '1k', val: 1000 },
+        { display: '2.1k', val: 2100 },
+        { display: '6.6k', val: 6666 },
+        { display: '10k', val: 10000 },
+        { display: '21k', val: 21000 },
+        { display: '66k', val: 66666 },
+        { display: '100k', val: 100000 },
+        { display: '210k', val: 210000 }
+      ]
+    }
+
+    return [
+      { display: '21', val: 21 },
+      { display: '42', val: 42 },
+      { display: '210', val: 210 },
+      { display: '420', val: 420 },
+      { display: '1k', val: 1000 },
+      { display: '2.1k', val: 2100 },
+      { display: '4.2k', val: 4200 },
+      { display: '10k', val: 10000 },
+      { display: '21k', val: 21000 },
+      { display: '42k', val: 42000 },
+      { display: '100k', val: 100000 },
+      { display: '210k', val: 210000 }
+    ]
+  }, [i18n.language])
 
   const handleZap = async () => {
     try {
@@ -148,22 +180,18 @@ function ZapDialogContent({
         throw new Error('You need to be logged in to zap')
       }
       setZapping(true)
-      const zapResult = await lightning.zap(pubkey, recipient, sats, comment, eventId, () =>
+      const zapResult = await lightning.zap(pubkey, event ?? recipient, sats, comment, () =>
         setOpen(false)
       )
       // user canceled
       if (!zapResult) {
         return
       }
-      if (eventId) {
-        addZap(eventId, zapResult.invoice, sats, comment)
+      if (event) {
+        noteStatsService.addZap(pubkey, event.id, zapResult.invoice, sats, comment)
       }
     } catch (error) {
-      toast({
-        title: t('Zap failed'),
-        description: (error as Error).message,
-        variant: 'destructive'
-      })
+      toast.error(`${t('Zap failed')}: ${(error as Error).message}`)
     } finally {
       setZapping(false)
     }
@@ -203,20 +231,7 @@ function ZapDialogContent({
 
       {/* Preset sats buttons */}
       <div className="grid grid-cols-6 gap-2">
-        {[
-          { display: '21', val: 21 },
-          { display: '66', val: 66 },
-          { display: '210', val: 210 },
-          { display: '666', val: 666 },
-          { display: '1k', val: 1000 },
-          { display: '2.1k', val: 2100 },
-          { display: '6.6k', val: 6666 },
-          { display: '10k', val: 10000 },
-          { display: '21k', val: 21000 },
-          { display: '66k', val: 66666 },
-          { display: '100k', val: 100000 },
-          { display: '210k', val: 210000 }
-        ].map(({ display, val }) => (
+        {presetAmounts.map(({ display, val }) => (
           <Button variant="secondary" key={val} onClick={() => setSats(val)}>
             {display}
           </Button>

@@ -1,20 +1,15 @@
 import { useFetchWebMetadata } from '@/hooks/useFetchWebMetadata'
 import { cn } from '@/lib/utils'
+import { useContentPolicy } from '@/providers/ContentPolicyProvider'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
 import { useMemo } from 'react'
 import Image from '../Image'
 
-export default function WebPreview({
-  url,
-  className,
-  size = 'normal'
-}: {
-  url: string
-  className?: string
-  size?: 'normal' | 'small'
-}) {
+export default function WebPreview({ url, className }: { url: string; className?: string }) {
+  const { autoLoadMedia } = useContentPolicy()
   const { isSmallScreen } = useScreenSize()
   const { title, description, image } = useFetchWebMetadata(url)
+
   const hostname = useMemo(() => {
     try {
       return new URL(url).hostname
@@ -23,6 +18,10 @@ export default function WebPreview({
     }
   }, [url])
 
+  if (!autoLoadMedia) {
+    return null
+  }
+
   if (!title) {
     return null
   }
@@ -30,14 +29,14 @@ export default function WebPreview({
   if (isSmallScreen && image) {
     return (
       <div
-        className="rounded-lg border mt-2"
+        className="rounded-lg border mt-2 overflow-hidden"
         onClick={(e) => {
           e.stopPropagation()
           window.open(url, '_blank')
         }}
       >
-        <Image image={{ url: image }} className="w-full h-44 rounded-t-lg" hideIfError />
-        <div className="bg-muted p-2 w-full rounded-b-lg">
+        <Image image={{ url: image }} className="w-full h-44 rounded-none" hideIfError />
+        <div className="bg-muted p-2 w-full">
           <div className="text-xs text-muted-foreground">{hostname}</div>
           <div className="font-semibold line-clamp-1">{title}</div>
         </div>
@@ -47,7 +46,7 @@ export default function WebPreview({
 
   return (
     <div
-      className={cn('p-0 clickable flex w-full border rounded-lg', className)}
+      className={cn('p-0 clickable flex w-full border rounded-lg overflow-hidden', className)}
       onClick={(e) => {
         e.stopPropagation()
         window.open(url, '_blank')
@@ -56,20 +55,14 @@ export default function WebPreview({
       {image && (
         <Image
           image={{ url: image }}
-          className={`rounded-lg aspect-[4/3] xl:aspect-video object-cover bg-foreground ${size === 'normal' ? 'h-44' : 'h-24'}`}
+          className="aspect-[4/3] xl:aspect-video bg-foreground h-44 rounded-none"
           hideIfError
         />
       )}
       <div className="flex-1 w-0 p-2">
         <div className="text-xs text-muted-foreground">{hostname}</div>
-        <div className={`font-semibold ${size === 'normal' ? 'line-clamp-2' : 'line-clamp-1'}`}>
-          {title}
-        </div>
-        <div
-          className={`text-xs text-muted-foreground ${size === 'normal' ? 'line-clamp-5' : 'line-clamp-2'}`}
-        >
-          {description}
-        </div>
+        <div className="font-semibold line-clamp-2">{title}</div>
+        <div className="text-xs text-muted-foreground line-clamp-5">{description}</div>
       </div>
     </div>
   )

@@ -17,6 +17,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { normalizeUrl } from '@/lib/url'
 import { useFavoriteRelays } from '@/providers/FavoriteRelaysProvider'
+import { useNostr } from '@/providers/NostrProvider'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
 import { TRelaySet } from '@/types'
 import { Check, FolderPlus, Plus, Star } from 'lucide-react'
@@ -87,7 +88,9 @@ export default function SaveRelayDropdownMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild className="px-2">
+        {trigger}
+      </DropdownMenuTrigger>
       <DropdownMenuContent onClick={(e) => e.stopPropagation()}>
         <DropdownMenuLabel>{t('Save to')} ...</DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -123,7 +126,7 @@ function RelayItem({ urls }: { urls: string[] }) {
     return (
       <DrawerMenuItem onClick={handleClick}>
         {saved ? <Check /> : <Plus />}
-        {t('Favorite')}
+        {saved ? t('Unfavorite') : t('Favorite')}
       </DrawerMenuItem>
     )
   }
@@ -131,17 +134,22 @@ function RelayItem({ urls }: { urls: string[] }) {
   return (
     <DropdownMenuItem className="flex gap-2" onClick={handleClick}>
       {saved ? <Check /> : <Plus />}
-      {t('Favorite')}
+      {saved ? t('Unfavorite') : t('Favorite')}
     </DropdownMenuItem>
   )
 }
 
 function RelaySetItem({ set, urls }: { set: TRelaySet; urls: string[] }) {
   const { isSmallScreen } = useScreenSize()
+  const { pubkey, startLogin } = useNostr()
   const { updateRelaySet } = useFavoriteRelays()
   const saved = urls.every((url) => set.relayUrls.includes(url))
 
   const handleClick = () => {
+    if (!pubkey) {
+      startLogin()
+      return
+    }
     if (saved) {
       updateRelaySet({
         ...set,
@@ -175,9 +183,14 @@ function RelaySetItem({ set, urls }: { set: TRelaySet; urls: string[] }) {
 function SaveToNewSet({ urls }: { urls: string[] }) {
   const { t } = useTranslation()
   const { isSmallScreen } = useScreenSize()
+  const { pubkey, startLogin } = useNostr()
   const { createRelaySet } = useFavoriteRelays()
 
   const handleSave = () => {
+    if (!pubkey) {
+      startLogin()
+      return
+    }
     const newSetName = prompt(t('Enter a name for the new relay set'))
     if (newSetName) {
       createRelaySet(newSetName, urls)

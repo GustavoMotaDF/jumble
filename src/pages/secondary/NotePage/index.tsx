@@ -1,34 +1,41 @@
 import { useSecondaryPage } from '@/PageManager'
 import ContentPreview from '@/components/ContentPreview'
-import Nip22ReplyNoteList from '@/components/Nip22ReplyNoteList'
 import Note from '@/components/Note'
+import NoteInteractions from '@/components/NoteInteractions'
 import NoteStats from '@/components/NoteStats'
-import PictureNote from '@/components/PictureNote'
-import ReplyNoteList from '@/components/ReplyNoteList'
 import UserAvatar from '@/components/UserAvatar'
 import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ExtendedKind } from '@/constants'
 import { useFetchEvent } from '@/hooks'
 import SecondaryPageLayout from '@/layouts/SecondaryPageLayout'
-import { getParentEventId, getRootEventId, isPictureEvent } from '@/lib/event'
-import { toNote } from '@/lib/link'
-import { useMuteList } from '@/providers/MuteListProvider'
-import { kinds } from 'nostr-tools'
+import { getParentBech32Id, getParentETag, getRootBech32Id } from '@/lib/event'
+import { toNote, toNoteList } from '@/lib/link'
+import { tagNameEquals } from '@/lib/tag'
+import { cn } from '@/lib/utils'
+import { Ellipsis } from 'lucide-react'
+import { Event } from 'nostr-tools'
 import { forwardRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import NotFoundPage from '../NotFoundPage'
+import NotFound from './NotFound'
 
 const NotePage = forwardRef(({ id, index }: { id?: string; index?: number }, ref) => {
   const { t } = useTranslation()
   const { event, isFetching } = useFetchEvent(id)
-  const parentEventId = useMemo(() => getParentEventId(event), [event])
-  const rootEventId = useMemo(() => getRootEventId(event), [event])
+  const parentEventId = useMemo(() => getParentBech32Id(event), [event])
+  const rootEventId = useMemo(() => getRootBech32Id(event), [event])
+  const rootITag = useMemo(
+    () => (event?.kind === ExtendedKind.COMMENT ? event.tags.find(tagNameEquals('I')) : undefined),
+    [event]
+  )
+  const { isFetching: isFetchingRootEvent, event: rootEvent } = useFetchEvent(rootEventId)
+  const { isFetching: isFetchingParentEvent, event: parentEvent } = useFetchEvent(parentEventId)
 
   if (!event && isFetching) {
     return (
       <SecondaryPageLayout ref={ref} index={index} title={t('Note')}>
-        <div className="px-4">
+        <div className="px-4 pt-3">
           <div className="flex items-center space-x-2">
             <Skeleton className="w-10 h-10 rounded-full" />
             <div className={`flex-1 w-0`}>
@@ -52,105 +59,122 @@ const NotePage = forwardRef(({ id, index }: { id?: string; index?: number }, ref
       </SecondaryPageLayout>
     )
   }
-  if (!event) return <NotFoundPage />
-
-  if (isPictureEvent(event)) {
+  if (!event) {
     return (
       <SecondaryPageLayout ref={ref} index={index} title={t('Note')} displayScrollToTopButton>
-        <PictureNote key={`note-${event.id}`} event={event} fetchNoteStats />
-        <Separator className="mt-4" />
-        <Nip22ReplyNoteList key={`nip22-reply-note-list-${event.id}`} event={event} />
+        <NotFound bech32Id={id} />
       </SecondaryPageLayout>
     )
   }
 
   return (
     <SecondaryPageLayout ref={ref} index={index} title={t('Note')} displayScrollToTopButton>
-      <div className="px-4">
-        {rootEventId !== parentEventId && (
-          <ParentNote key={`root-note-${event.id}`} eventId={rootEventId} />
+      <div className="px-4 pt-3">
+        {rootITag && <ExternalRoot value={rootITag[1]} />}
+        {rootEventId && rootEventId !== parentEventId && (
+          <ParentNote
+            key={`root-note-${event.id}`}
+            isFetching={isFetchingRootEvent}
+            event={rootEvent}
+            eventBech32Id={rootEventId}
+            isConsecutive={isConsecutive(rootEvent, parentEvent)}
+          />
         )}
-        <ParentNote key={`parent-note-${event.id}`} eventId={parentEventId} />
+        {parentEventId && (
+          <ParentNote
+            key={`parent-note-${event.id}`}
+            isFetching={isFetchingParentEvent}
+            event={parentEvent}
+            eventBech32Id={parentEventId}
+          />
+        )}
         <Note
           key={`note-${event.id}`}
           event={event}
           className="select-text"
           hideParentNotePreview
+          originalNoteId={id}
+          showFull
         />
-        <NoteStats className="mt-3" event={event} fetchIfNotExisting />
+        <NoteStats className="mt-3" event={event} fetchIfNotExisting displayTopZapsAndLikes />
       </div>
       <Separator className="mt-4" />
-      {event.kind === kinds.ShortTextNote ? (
-        <ReplyNoteList key={`reply-note-list-${event.id}`} index={index} event={event} />
-      ) : isPictureEvent(event) ? (
-        <Nip22ReplyNoteList key={`nip22-reply-note-list-${event.id}`} event={event} />
-      ) : null}
+      <NoteInteractions key={`note-interactions-${event.id}`} pageIndex={index} event={event} />
     </SecondaryPageLayout>
   )
 })
 NotePage.displayName = 'NotePage'
 export default NotePage
 
-function ParentNote({ eventId }: { eventId?: string }) {
-  const { t } = useTranslation()
+function ExternalRoot({ value }: { value: string }) {
   const { push } = useSecondaryPage()
-  const { mutePubkeys } = useMuteList()
-  const { event, isFetching } = useFetchEvent(eventId)
-  if (!eventId) return null
+
+  return (
+    <div>
+      <Card
+        className="flex space-x-1 px-1.5 py-1 items-center clickable text-sm text-muted-foreground hover:text-foreground"
+        onClick={() => push(toNoteList({ externalContentId: value }))}
+      >
+        <div className="truncate">{value}</div>
+      </Card>
+      <div className="ml-5 w-px h-2 bg-border" />
+    </div>
+  )
+}
+
+function ParentNote({
+  event,
+  eventBech32Id,
+  isFetching,
+  isConsecutive = true
+}: {
+  event?: Event
+  eventBech32Id: string
+  isFetching: boolean
+  isConsecutive?: boolean
+}) {
+  const { push } = useSecondaryPage()
 
   if (isFetching) {
     return (
       <div>
-        <Card
-          className="flex space-x-1 p-1 items-center clickable text-sm text-muted-foreground hover:text-foreground"
-          onClick={() => push(toNote(eventId))}
-        >
+        <div className="flex space-x-1 px-[0.4375rem] py-1 items-center rounded-full border clickable text-sm text-muted-foreground">
           <Skeleton className="shrink w-4 h-4 rounded-full" />
           <div className="py-1 flex-1">
             <Skeleton className="h-3" />
           </div>
-        </Card>
-        <div className="ml-5 w-px h-2 bg-border" />
-      </div>
-    )
-  }
-
-  if (!event) {
-    return (
-      <div>
-        <Card className="flex p-1 items-center justify-center text-sm text-muted-foreground">
-          [{t('Not found the note')}]
-        </Card>
-        <div className="ml-5 w-px h-2 bg-border" />
-      </div>
-    )
-  }
-
-  if (mutePubkeys.includes(event.pubkey)) {
-    return (
-      <div>
-        <Card
-          className="flex space-x-1 p-1 items-center clickable text-sm text-muted-foreground hover:text-foreground"
-          onClick={() => push(toNote(eventId))}
-        >
-          <UserAvatar userId={event.pubkey} size="tiny" className="shrink-0" />
-          <div className="shrink-0">[{t('This user has been muted')}]</div>
-        </Card>
-        <div className="ml-5 w-px h-2 bg-border" />
+        </div>
+        <div className="ml-5 w-px h-3 bg-border" />
       </div>
     )
   }
 
   return (
     <div>
-      <Card
-        className="flex space-x-1 p-1 items-center clickable text-sm text-muted-foreground hover:text-foreground"
-        onClick={() => push(toNote(eventId))}
+      <div
+        className={cn(
+          'flex space-x-1 px-[0.4375rem] py-1 items-center rounded-full border clickable text-sm text-muted-foreground',
+          event && 'hover:text-foreground'
+        )}
+        onClick={() => {
+          push(toNote(event ?? eventBech32Id))
+        }}
       >
-        <UserAvatar userId={event.pubkey} size="tiny" className="shrink-0" />
+        {event && <UserAvatar userId={event.pubkey} size="tiny" className="shrink-0" />}
         <ContentPreview className="truncate" event={event} />
-      </Card>
-      <div className="ml-5 w-px h-2 bg-border" />
+      </div>
+      {isConsecutive ? (
+        <div className="ml-5 w-px h-3 bg-border" />
+      ) : (
+        <Ellipsis className="ml-3.5 text-muted-foreground/60 size-3" />
+      )}
     </div>
   )
+}
+
+function isConsecutive(rootEvent?: Event, parentEvent?: Event) {
+  const eTag = getParentETag(parentEvent)
+  if (!eTag) return false
+
+  return rootEvent?.id === eTag[1]
 }

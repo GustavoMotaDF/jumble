@@ -1,23 +1,16 @@
 import { cn, isInViewport } from '@/lib/utils'
-import videoManager from '@/services/video-manager.service'
+import { useContentPolicy } from '@/providers/ContentPolicyProvider'
+import mediaManager from '@/services/media-manager.service'
 import { useEffect, useRef } from 'react'
-import NsfwOverlay from '../NsfwOverlay'
 
-export default function VideoPlayer({
-  src,
-  className,
-  isNsfw = false,
-  size = 'normal'
-}: {
-  src: string
-  className?: string
-  isNsfw?: boolean
-  size?: 'normal' | 'small'
-}) {
+export default function VideoPlayer({ src, className }: { src: string; className?: string }) {
+  const { autoplay } = useContentPolicy()
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (!autoplay) return
+
     const video = videoRef.current
     const container = containerRef.current
 
@@ -28,11 +21,11 @@ export default function VideoPlayer({
         if (entry.isIntersecting) {
           setTimeout(() => {
             if (isInViewport(container)) {
-              videoManager.autoPlay(video)
+              mediaManager.autoPlay(video)
             }
           }, 200)
         } else {
-          videoManager.pause(video)
+          mediaManager.pause(video)
         }
       },
       { threshold: 1 }
@@ -43,23 +36,22 @@ export default function VideoPlayer({
     return () => {
       observer.unobserve(container)
     }
-  }, [])
+  }, [autoplay])
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef}>
       <video
         ref={videoRef}
         controls
         playsInline
-        className={cn('rounded-lg', size === 'small' ? 'max-h-[30vh]' : 'max-h-[50vh]', className)}
+        className={cn('rounded-lg max-h-[80vh] sm:max-h-[60vh] border', className)}
         src={src}
         onClick={(e) => e.stopPropagation()}
         onPlay={(event) => {
-          videoManager.play(event.currentTarget)
+          mediaManager.play(event.currentTarget)
         }}
         muted
       />
-      {isNsfw && <NsfwOverlay className="rounded-lg" />}
     </div>
   )
 }

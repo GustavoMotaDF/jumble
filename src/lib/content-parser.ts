@@ -1,8 +1,20 @@
+import {
+  EMBEDDED_EVENT_REGEX,
+  EMBEDDED_MENTION_REGEX,
+  EMOJI_SHORT_CODE_REGEX,
+  HASHTAG_REGEX,
+  LN_INVOICE_REGEX,
+  URL_REGEX,
+  WS_URL_REGEX,
+  YOUTUBE_URL_REGEX
+} from '@/constants'
+import { isImage, isMedia } from './url'
+
 export type TEmbeddedNodeType =
   | 'text'
   | 'image'
   | 'images'
-  | 'video'
+  | 'media'
   | 'event'
   | 'mention'
   | 'legacy-mention'
@@ -10,6 +22,8 @@ export type TEmbeddedNodeType =
   | 'websocket-url'
   | 'url'
   | 'emoji'
+  | 'invoice'
+  | 'youtube'
 
 export type TEmbeddedNode =
   | {
@@ -21,16 +35,18 @@ export type TEmbeddedNode =
       data: string[]
     }
 
-type TContentParser = { type: Exclude<TEmbeddedNodeType, 'images'>; regex: RegExp }
+type TContentParser =
+  | { type: Exclude<TEmbeddedNodeType, 'images'>; regex: RegExp }
+  | ((content: string) => TEmbeddedNode[])
 
 export const EmbeddedHashtagParser: TContentParser = {
   type: 'hashtag',
-  regex: /#[\p{L}\p{N}\p{M}_]+/gu
+  regex: HASHTAG_REGEX
 }
 
 export const EmbeddedMentionParser: TContentParser = {
   type: 'mention',
-  regex: /nostr:(npub1[a-z0-9]{58}|nprofile1[a-z0-9]+)/g
+  regex: EMBEDDED_MENTION_REGEX
 }
 
 export const EmbeddedLegacyMentionParser: TContentParser = {
@@ -40,34 +56,64 @@ export const EmbeddedLegacyMentionParser: TContentParser = {
 
 export const EmbeddedEventParser: TContentParser = {
   type: 'event',
-  regex: /nostr:(note1[a-z0-9]{58}|nevent1[a-z0-9]+|naddr1[a-z0-9]+)/g
-}
-
-export const EmbeddedImageParser: TContentParser = {
-  type: 'image',
-  regex:
-    /https?:\/\/[\w\p{L}\p{N}\p{M}&.-/?=#\-@%+_:!~*]+\.(jpg|jpeg|png|gif|webp|bmp|tiff|heic|svg)(\?[\w\p{L}\p{N}\p{M}&.-/?=#\-@%+_:!~*]+)?/giu
-}
-
-export const EmbeddedVideoParser: TContentParser = {
-  type: 'video',
-  regex:
-    /https?:\/\/[\w\p{L}\p{N}\p{M}&.-/?=#\-@%+_:!~*]+\.(mp4|webm|ogg|mov)(\?[\w\p{L}\p{N}\p{M}&.-/?=#\-@%+_:!~*]+)?/giu
+  regex: EMBEDDED_EVENT_REGEX
 }
 
 export const EmbeddedWebsocketUrlParser: TContentParser = {
   type: 'websocket-url',
-  regex: /wss?:\/\/[\w\p{L}\p{N}\p{M}&.-/?=#\-@%+_:!~*]+/gu
-}
-
-export const EmbeddedNormalUrlParser: TContentParser = {
-  type: 'url',
-  regex: /https?:\/\/[\w\p{L}\p{N}\p{M}&.-/?=#\-@%+_:!~*]+/gu
+  regex: WS_URL_REGEX
 }
 
 export const EmbeddedEmojiParser: TContentParser = {
   type: 'emoji',
-  regex: /:[a-zA-Z0-9_-]+:/g
+  regex: EMOJI_SHORT_CODE_REGEX
+}
+
+export const EmbeddedLNInvoiceParser: TContentParser = {
+  type: 'invoice',
+  regex: LN_INVOICE_REGEX
+}
+
+export const EmbeddedUrlParser: TContentParser = (content: string) => {
+  const matches = content.matchAll(URL_REGEX)
+  const result: TEmbeddedNode[] = []
+  let lastIndex = 0
+  for (const match of matches) {
+    const matchStart = match.index!
+    // Add text before the match
+    if (matchStart > lastIndex) {
+      result.push({
+        type: 'text',
+        data: content.slice(lastIndex, matchStart)
+      })
+    }
+
+    const url = match[0]
+    let type: TEmbeddedNodeType = 'url'
+    if (isImage(url)) {
+      type = 'image'
+    } else if (isMedia(url)) {
+      type = 'media'
+    } else if (YOUTUBE_URL_REGEX.test(url)) {
+      type = 'youtube'
+    }
+
+    // Add the match as specific type
+    result.push({
+      type,
+      data: url
+    })
+
+    lastIndex = matchStart + url.length
+  }
+  // Add text after the last match
+  if (lastIndex < content.length) {
+    result.push({
+      type: 'text',
+      data: content.slice(lastIndex)
+    })
+  }
+  return result
 }
 
 export function parseContent(content: string, parsers: TContentParser[]) {
@@ -77,6 +123,11 @@ export function parseContent(content: string, parsers: TContentParser[]) {
     nodes = nodes
       .flatMap((node) => {
         if (node.type !== 'text') return [node]
+
+        if (typeof parser === 'function') {
+          return parser(node.data)
+        }
+
         const matches = node.data.matchAll(parser.regex)
         const result: TEmbeddedNode[] = []
         let lastIndex = 0

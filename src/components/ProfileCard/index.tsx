@@ -9,7 +9,7 @@ export default function ProfileCard({ pubkey }: { pubkey: string }) {
   const { username, about } = profile || {}
 
   return (
-    <div className="w-full flex flex-col gap-2">
+    <div className="w-full flex flex-col gap-2 not-prose">
       <div className="flex space-x-2 w-full items-start justify-between">
         <SimpleUserAvatar userId={pubkey} className="w-12 h-12" />
         <FollowButton pubkey={pubkey} />
@@ -19,12 +19,10 @@ export default function ProfileCard({ pubkey }: { pubkey: string }) {
         <Nip05 pubkey={pubkey} />
       </div>
       {about && (
-        <div
-          className="text-sm text-wrap break-words w-full overflow-hidden text-ellipsis"
-          style={{ display: '-webkit-box', WebkitLineClamp: 6, WebkitBoxOrient: 'vertical' }}
-        >
-          <ProfileAbout about={about} />
-        </div>
+        <ProfileAbout
+          about={about}
+          className="text-sm text-wrap break-words w-full overflow-hidden text-ellipsis line-clamp-6"
+        />
       )}
     </div>
   )

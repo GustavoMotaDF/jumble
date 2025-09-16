@@ -6,61 +6,60 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle
+} from '@/components/ui/sheet'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
+import postEditor from '@/services/post-editor.service'
 import { Event } from 'nostr-tools'
 import { Dispatch, useMemo } from 'react'
-import { useTranslation } from 'react-i18next'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '../ui/sheet'
-import NormalPostContent from './NormalPostContent'
-import PicturePostContent from './PicturePostContent'
+import PostContent from './PostContent'
 import Title from './Title'
 
 export default function PostEditor({
   defaultContent = '',
   parentEvent,
   open,
-  setOpen
+  setOpen,
+  openFrom
 }: {
   defaultContent?: string
   parentEvent?: Event
   open: boolean
   setOpen: Dispatch<boolean>
+  openFrom?: string[]
 }) {
-  const { t } = useTranslation()
   const { isSmallScreen } = useScreenSize()
 
   const content = useMemo(() => {
-    return parentEvent || defaultContent ? (
-      <NormalPostContent
+    return (
+      <PostContent
         defaultContent={defaultContent}
         parentEvent={parentEvent}
         close={() => setOpen(false)}
+        openFrom={openFrom}
       />
-    ) : (
-      <Tabs defaultValue="normal" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="normal">{t('Normal Note')}</TabsTrigger>
-          <TabsTrigger value="picture">{t('Picture Note')}</TabsTrigger>
-        </TabsList>
-        <TabsContent value="normal">
-          <NormalPostContent
-            defaultContent={defaultContent}
-            parentEvent={parentEvent}
-            close={() => setOpen(false)}
-          />
-        </TabsContent>
-        <TabsContent value="picture">
-          <PicturePostContent close={() => setOpen(false)} />
-        </TabsContent>
-      </Tabs>
     )
-  }, [parentEvent, defaultContent])
+  }, [])
 
   if (isSmallScreen) {
     return (
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent className="h-full w-full p-0 border-none" side="bottom" hideClose>
+        <SheetContent
+          className="h-full w-full p-0 border-none"
+          side="bottom"
+          hideClose
+          onEscapeKeyDown={(e) => {
+            if (postEditor.isSuggestionPopupOpen) {
+              e.preventDefault()
+              postEditor.closeSuggestionPopup()
+            }
+          }}
+        >
           <ScrollArea className="px-4 h-full max-h-screen">
             <div className="space-y-4 px-2 py-6">
               <SheetHeader>
@@ -79,7 +78,16 @@ export default function PostEditor({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="p-0 max-w-2xl" withoutClose>
+      <DialogContent
+        className="p-0 max-w-2xl"
+        withoutClose
+        onEscapeKeyDown={(e) => {
+          if (postEditor.isSuggestionPopupOpen) {
+            e.preventDefault()
+            postEditor.closeSuggestionPopup()
+          }
+        }}
+      >
         <ScrollArea className="px-4 h-full max-h-screen">
           <div className="space-y-4 px-2 py-6">
             <DialogHeader>

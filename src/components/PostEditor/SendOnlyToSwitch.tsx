@@ -3,7 +3,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Switch } from '@/components/ui/switch'
 import { isProtectedEvent } from '@/lib/event'
 import { simplifyUrl } from '@/lib/url'
-import { useFeed } from '@/providers/FeedProvider'
+import { useCurrentRelays } from '@/providers/CurrentRelaysProvider'
 import client from '@/services/client.service'
 import { Info } from 'lucide-react'
 import { Event } from 'nostr-tools'
@@ -13,19 +13,26 @@ import { useTranslation } from 'react-i18next'
 export default function SendOnlyToSwitch({
   parentEvent,
   specifiedRelayUrls,
-  setSpecifiedRelayUrls
+  setSpecifiedRelayUrls,
+  openFrom
 }: {
   parentEvent?: Event
   specifiedRelayUrls?: string[]
   setSpecifiedRelayUrls: Dispatch<SetStateAction<string[] | undefined>>
+  openFrom?: string[]
 }) {
   const { t } = useTranslation()
-  const { relayUrls } = useFeed()
+  const { currentRelayUrls } = useCurrentRelays()
   const [urls, setUrls] = useState<string[]>([])
 
   useEffect(() => {
+    if (openFrom?.length) {
+      setUrls(openFrom)
+      setSpecifiedRelayUrls(openFrom)
+      return
+    }
     if (!parentEvent) {
-      setUrls(relayUrls)
+      setUrls(currentRelayUrls)
       return
     }
     const isProtected = isProtectedEvent(parentEvent)
@@ -34,15 +41,15 @@ export default function SendOnlyToSwitch({
       setSpecifiedRelayUrls(seenOn)
       setUrls(seenOn)
     } else {
-      setUrls(relayUrls)
+      setUrls(currentRelayUrls)
     }
-  }, [parentEvent, relayUrls])
+  }, [parentEvent, currentRelayUrls, openFrom])
 
   if (!urls.length) return null
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 truncate">
         <Label htmlFor="send-only-to-current-relays" className="truncate">
           {urls.length === 1
             ? t('Send only to r', { r: simplifyUrl(urls[0]) })

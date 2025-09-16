@@ -1,21 +1,25 @@
-import { useToast } from '@/hooks'
+import { getReplaceableCoordinateFromEvent, isReplaceableEvent } from '@/lib/event'
 import { useBookmarks } from '@/providers/BookmarksProvider'
 import { useNostr } from '@/providers/NostrProvider'
 import { BookmarkIcon, Loader } from 'lucide-react'
+import { Event } from 'nostr-tools'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Event } from 'nostr-tools'
+import { toast } from 'sonner'
 
 export default function BookmarkButton({ event }: { event: Event }) {
   const { t } = useTranslation()
-  const { toast } = useToast()
   const { pubkey: accountPubkey, bookmarkListEvent, checkLogin } = useNostr()
   const { addBookmark, removeBookmark } = useBookmarks()
   const [updating, setUpdating] = useState(false)
-  const isBookmarked = useMemo(
-    () => bookmarkListEvent?.tags.some((tag) => tag[0] === 'e' && tag[1] === event.id),
-    [bookmarkListEvent, event]
-  )
+  const isBookmarked = useMemo(() => {
+    const isReplaceable = isReplaceableEvent(event.kind)
+    const eventKey = isReplaceable ? getReplaceableCoordinateFromEvent(event) : event.id
+
+    return bookmarkListEvent?.tags.some((tag) =>
+      isReplaceable ? tag[0] === 'a' && tag[1] === eventKey : tag[0] === 'e' && tag[1] === eventKey
+    )
+  }, [bookmarkListEvent, event])
 
   if (!accountPubkey) return null
 
@@ -28,11 +32,7 @@ export default function BookmarkButton({ event }: { event: Event }) {
       try {
         await addBookmark(event)
       } catch (error) {
-        toast({
-          title: t('Bookmark failed'),
-          description: (error as Error).message,
-          variant: 'destructive'
-        })
+        toast.error(t('Bookmark failed') + ': ' + (error as Error).message)
       } finally {
         setUpdating(false)
       }
@@ -48,11 +48,7 @@ export default function BookmarkButton({ event }: { event: Event }) {
       try {
         await removeBookmark(event)
       } catch (error) {
-        toast({
-          title: t('Remove bookmark failed'),
-          description: (error as Error).message,
-          variant: 'destructive'
-        })
+        toast.error(t('Remove bookmark failed') + ': ' + (error as Error).message)
       } finally {
         setUpdating(false)
       }

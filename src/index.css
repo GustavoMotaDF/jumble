@@ -42,13 +42,43 @@
     }
   }
 
+  .tiptap p.is-editor-empty:first-child::before {
+    color: hsl(var(--muted-foreground));
+    content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none; /* Internet Explorer 10+ */
+    scrollbar-width: none; /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none; /* Safari and Chrome */
+  }
+
   @media (hover: hover) and (pointer: fine) {
     .clickable:hover {
       background-color: hsl(var(--muted) / 0.5);
     }
   }
 
+  @keyframes shimmer {
+    0% {
+      background-position: 400% 0;
+    }
+    100% {
+      background-position: 0% 0;
+    }
+  }
+
+  .animate-shimmer {
+    animation: shimmer 3s ease-in-out infinite;
+  }
+
   :root {
+    --surface-background: 0 0% 98%;
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
     --card: 0 0% 100%;
@@ -58,11 +88,11 @@
     --primary: 259 43% 56%;
     --primary-hover: 259 43% 65%;
     --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
+    --secondary: 240 4.8% 94%;
     --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
+    --muted: 240 4.8% 94%;
     --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
+    --accent: 240 4.8% 94%;
     --accent-foreground: 240 5.9% 10%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
@@ -77,11 +107,12 @@
     --radius: 0.5rem;
   }
   .dark {
-    --background: 240 10% 3.9%;
+    --surface-background: 240 10% 3.9%;
+    --background: 0 0% 9%;
     --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
+    --card: 0 0% 9%;
     --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
+    --popover: 0 0% 9%;
     --popover-foreground: 0 0% 98%;
     --primary: 259 43% 56%;
     --primary-hover: 259 43% 65%;
@@ -102,5 +133,52 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
+  }
+
+  .dark input[type='datetime-local']::-webkit-calendar-picker-indicator {
+    filter: invert(1) brightness(1.5);
+  }
+}
+
+@keyframes progressFill {
+  0% {
+    width: 0%;
+  }
+  100% {
+    width: 100%;
+  }
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  10% {
+    transform: translate(-1px, -1px) rotate(-1deg);
+  }
+  20% {
+    transform: translate(1px, -1px) rotate(1deg);
+  }
+  30% {
+    transform: translate(-1px, 1px) rotate(-1deg);
+  }
+  40% {
+    transform: translate(1px, 1px) rotate(1deg);
+  }
+  50% {
+    transform: translate(-1px, -1px) rotate(-1deg);
+  }
+  60% {
+    transform: translate(1px, -1px) rotate(1deg);
+  }
+  70% {
+    transform: translate(-1px, 1px) rotate(-1deg);
+  }
+  80% {
+    transform: translate(1px, 1px) rotate(1deg);
+  }
+  90% {
+    transform: translate(-1px, -1px) rotate(-1deg);
   }
 }

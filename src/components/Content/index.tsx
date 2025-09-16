@@ -1,22 +1,24 @@
+import { useTranslatedEvent } from '@/hooks'
 import {
   EmbeddedEmojiParser,
   EmbeddedEventParser,
   EmbeddedHashtagParser,
-  EmbeddedImageParser,
+  EmbeddedLNInvoiceParser,
   EmbeddedMentionParser,
-  EmbeddedNormalUrlParser,
-  EmbeddedVideoParser,
+  EmbeddedUrlParser,
   EmbeddedWebsocketUrlParser,
   parseContent
 } from '@/lib/content-parser'
-import { extractEmojiInfosFromTags, isNsfwEvent } from '@/lib/event'
-import { extractImageInfoFromTag } from '@/lib/tag'
+import { getImetaInfosFromEvent } from '@/lib/event'
+import { getEmojiInfosFromEmojiTags, getImetaInfoFromImetaTag } from '@/lib/tag'
 import { cn } from '@/lib/utils'
-import { TImageInfo } from '@/types'
+import mediaUpload from '@/services/media-upload.service'
+import { TImetaInfo } from '@/types'
 import { Event } from 'nostr-tools'
 import { memo } from 'react'
 import {
   EmbeddedHashtag,
+  EmbeddedLNInvoice,
   EmbeddedMention,
   EmbeddedNormalUrl,
   EmbeddedNote,
@@ -24,23 +26,29 @@ import {
 } from '../Embedded'
 import Emoji from '../Emoji'
 import ImageGallery from '../ImageGallery'
-import VideoPlayer from '../VideoPlayer'
+import MediaPlayer from '../MediaPlayer'
 import WebPreview from '../WebPreview'
+import YoutubeEmbeddedPlayer from '../YoutubeEmbeddedPlayer'
 
 const Content = memo(
   ({
     event,
+    content,
     className,
-    size = 'normal'
+    mustLoadMedia
   }: {
-    event: Event
+    event?: Event
+    content?: string
     className?: string
-    size?: 'normal' | 'small'
+    mustLoadMedia?: boolean
   }) => {
-    const nodes = parseContent(event.content, [
-      EmbeddedImageParser,
-      EmbeddedVideoParser,
-      EmbeddedNormalUrlParser,
+    const translatedEvent = useTranslatedEvent(event?.id)
+    const _content = translatedEvent?.content ?? event?.content ?? content
+    if (!_content) return null
+
+    const nodes = parseContent(_content, [
+      EmbeddedUrlParser,
+      EmbeddedLNInvoiceParser,
       EmbeddedWebsocketUrlParser,
       EmbeddedEventParser,
       EmbeddedMentionParser,
@@ -48,29 +56,33 @@ const Content = memo(
       EmbeddedEmojiParser
     ])
 
-    const imageInfos = event.tags
-      .map((tag) => extractImageInfoFromTag(tag))
-      .filter(Boolean) as TImageInfo[]
+    const imetaInfos = event ? getImetaInfosFromEvent(event) : []
     const allImages = nodes
       .map((node) => {
         if (node.type === 'image') {
-          const imageInfo = imageInfos.find((image) => image.url === node.data)
-          return imageInfo ?? { url: node.data }
+          const imageInfo = imetaInfos.find((image) => image.url === node.data)
+          if (imageInfo) {
+            return imageInfo
+          }
+          const tag = mediaUpload.getImetaTagByUrl(node.data)
+          return tag
+            ? getImetaInfoFromImetaTag(tag, event?.pubkey)
+            : { url: node.data, pubkey: event?.pubkey }
         }
         if (node.type === 'images') {
           const urls = Array.isArray(node.data) ? node.data : [node.data]
           return urls.map((url) => {
-            const imageInfo = imageInfos.find((image) => image.url === url)
-            return imageInfo ?? { url }
+            const imageInfo = imetaInfos.find((image) => image.url === url)
+            return imageInfo ?? { url, pubkey: event?.pubkey }
           })
         }
         return null
       })
       .filter(Boolean)
-      .flat() as TImageInfo[]
+      .flat() as TImetaInfo[]
     let imageIndex = 0
 
-    const emojiInfos = extractEmojiInfosFromTags(event.tags)
+    const emojiInfos = getEmojiInfosFromEmojiTags(event?.tags)
 
     const lastNormalUrlNode = nodes.findLast((node) => node.type === 'url')
     const lastNormalUrl =
@@ -88,42 +100,32 @@ const Content = memo(
             imageIndex = end
             return (
               <ImageGallery
-                className={`${size === 'small' ? 'mt-1' : 'mt-2'}`}
+                className="mt-2"
                 key={index}
                 images={allImages}
-                isNsfw={isNsfwEvent(event)}
-                size={size}
                 start={start}
                 end={end}
+                mustLoad={mustLoadMedia}
               />
             )
           }
-          if (node.type === 'video') {
+          if (node.type === 'media') {
             return (
-              <VideoPlayer
-                className={size === 'small' ? 'mt-1' : 'mt-2'}
-                key={index}
-                src={node.data}
-                isNsfw={isNsfwEvent(event)}
-                size={size}
-              />
+              <MediaPlayer className="mt-2" key={index} src={node.data} mustLoad={mustLoadMedia} />
             )
           }
           if (node.type === 'url') {
             return <EmbeddedNormalUrl url={node.data} key={index} />
+          }
+          if (node.type === 'invoice') {
+            return <EmbeddedLNInvoice invoice={node.data} key={index} className="mt-2" />
           }
           if (node.type === 'websocket-url') {
             return <EmbeddedWebsocketUrl url={node.data} key={index} />
           }
           if (node.type === 'event') {
             const id = node.data.split(':')[1]
-            return (
-              <EmbeddedNote
-                key={index}
-                noteId={id}
-                className={size === 'small' ? 'mt-1' : 'mt-2'}
-              />
-            )
+            return <EmbeddedNote key={index} noteId={id} className="mt-2" />
           }
           if (node.type === 'mention') {
             return <EmbeddedMention key={index} userId={node.data.split(':')[1]} />
@@ -135,17 +137,21 @@ const Content = memo(
             const shortcode = node.data.split(':')[1]
             const emoji = emojiInfos.find((e) => e.shortcode === shortcode)
             if (!emoji) return node.data
-            return <Emoji emoji={emoji} key={index} className="size-4" />
+            return <Emoji classNames={{ img: 'mb-1' }} emoji={emoji} key={index} />
+          }
+          if (node.type === 'youtube') {
+            return (
+              <YoutubeEmbeddedPlayer
+                key={index}
+                url={node.data}
+                className="mt-2"
+                mustLoad={mustLoadMedia}
+              />
+            )
           }
           return null
         })}
-        {lastNormalUrl && (
-          <WebPreview
-            className={size === 'small' ? 'mt-1' : 'mt-2'}
-            url={lastNormalUrl}
-            size={size}
-          />
-        )}
+        {lastNormalUrl && <WebPreview className="mt-2" url={lastNormalUrl} />}
       </div>
     )
   }

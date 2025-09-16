@@ -10,6 +10,9 @@ export default {
         sm: 'calc(var(--radius) - 4px)'
       },
       colors: {
+        surface: {
+          background: 'hsl(var(--surface-background))'
+        },
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         card: {
@@ -55,5 +58,5 @@ export default {
       }
     }
   },
-  plugins: [require('tailwindcss-animate')]
+  plugins: [require('tailwindcss-animate'), require('@tailwindcss/typography')]
 }

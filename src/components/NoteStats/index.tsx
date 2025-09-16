@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils'
-import { useNoteStats } from '@/providers/NoteStatsProvider'
+import { useNostr } from '@/providers/NostrProvider'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
+import noteStatsService from '@/services/note-stats.service'
 import { Event } from 'nostr-tools'
 import { useEffect, useState } from 'react'
 import BookmarkButton from '../BookmarkButton'
@@ -17,7 +18,7 @@ export default function NoteStats({
   className,
   classNames,
   fetchIfNotExisting = false,
-  variant = 'note'
+  displayTopZapsAndLikes = false
 }: {
   event: Event
   className?: string
@@ -25,23 +26,27 @@ export default function NoteStats({
     buttonBar?: string
   }
   fetchIfNotExisting?: boolean
-  variant?: 'note' | 'reply'
+  displayTopZapsAndLikes?: boolean
 }) {
   const { isSmallScreen } = useScreenSize()
-  const { fetchNoteStats } = useNoteStats()
+  const { pubkey } = useNostr()
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!fetchIfNotExisting) return
     setLoading(true)
-    fetchNoteStats(event).finally(() => setLoading(false))
+    noteStatsService.fetchNoteStats(event, pubkey).finally(() => setLoading(false))
   }, [event, fetchIfNotExisting])
 
   if (isSmallScreen) {
     return (
       <div className={cn('select-none', className)}>
-        <TopZaps event={event} />
-        <Likes event={event} />
+        {displayTopZapsAndLikes && (
+          <>
+            <TopZaps event={event} />
+            <Likes event={event} />
+          </>
+        )}
         <div
           className={cn(
             'flex justify-between items-center h-5 [&_svg]:size-5',
@@ -50,7 +55,7 @@ export default function NoteStats({
           )}
           onClick={(e) => e.stopPropagation()}
         >
-          <ReplyButton event={event} variant={variant} />
+          <ReplyButton event={event} />
           <RepostButton event={event} />
           <LikeButton event={event} />
           <ZapButton event={event} />
@@ -63,14 +68,18 @@ export default function NoteStats({
 
   return (
     <div className={cn('select-none', className)}>
-      <TopZaps event={event} />
-      <Likes event={event} />
+      {displayTopZapsAndLikes && (
+        <>
+          <TopZaps event={event} />
+          <Likes event={event} />
+        </>
+      )}
       <div className="flex justify-between h-5 [&_svg]:size-4">
         <div
           className={cn('flex items-center', loading ? 'animate-pulse' : '')}
           onClick={(e) => e.stopPropagation()}
         >
-          <ReplyButton event={event} variant={variant} />
+          <ReplyButton event={event} />
           <RepostButton event={event} />
           <LikeButton event={event} />
           <ZapButton event={event} />

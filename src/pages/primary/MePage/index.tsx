@@ -2,7 +2,7 @@ import AccountManager from '@/components/AccountManager'
 import LoginDialog from '@/components/LoginDialog'
 import LogoutDialog from '@/components/LogoutDialog'
 import PubkeyCopy from '@/components/PubkeyCopy'
-import QrCodePopover from '@/components/QrCodePopover'
+import NpubQrCode from '@/components/NpubQrCode'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { SimpleUserAvatar } from '@/components/UserAvatar'
@@ -33,7 +33,12 @@ const MePage = forwardRef((_, ref) => {
 
   if (!pubkey) {
     return (
-      <PrimaryPageLayout ref={ref} pageName="home" titlebar={<MePageTitlebar />}>
+      <PrimaryPageLayout
+        ref={ref}
+        pageName="home"
+        titlebar={<MePageTitlebar />}
+        hideTitlebarBottomBorder
+      >
         <div className="flex flex-col p-4 gap-4 overflow-auto">
           <AccountManager />
         </div>
@@ -42,18 +47,23 @@ const MePage = forwardRef((_, ref) => {
   }
 
   return (
-    <PrimaryPageLayout ref={ref} pageName="home" titlebar={<MePageTitlebar />}>
+    <PrimaryPageLayout
+      ref={ref}
+      pageName="home"
+      titlebar={<MePageTitlebar />}
+      hideTitlebarBottomBorder
+    >
       <div className="flex gap-4 items-center p-4">
         <SimpleUserAvatar userId={pubkey} size="big" />
-        <div className="space-y-1">
+        <div className="space-y-1 flex-1 w-0">
           <SimpleUsername
-            className="text-xl font-semibold truncate"
+            className="text-xl font-semibold text-wrap"
             userId={pubkey}
             skeletonClassName="h-6 w-32"
           />
           <div className="flex gap-1 mt-1">
             <PubkeyCopy pubkey={pubkey} />
-            <QrCodePopover pubkey={pubkey} />
+            <NpubQrCode pubkey={pubkey} />
           </div>
         </div>
       </div>

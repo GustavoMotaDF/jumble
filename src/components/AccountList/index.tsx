@@ -1,10 +1,11 @@
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { isSameAccount } from '@/lib/account'
 import { formatPubkey } from '@/lib/pubkey'
 import { cn } from '@/lib/utils'
 import { useNostr } from '@/providers/NostrProvider'
 import { TAccountPointer, TSignerType } from '@/types'
-import { Loader } from 'lucide-react'
+import { Loader, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { SimpleUserAvatar } from '../UserAvatar'
 import { SimpleUsername } from '../Username'
@@ -16,7 +17,7 @@ export default function AccountList({
   className?: string
   afterSwitch: () => void
 }) {
-  const { accounts, account, switchAccount } = useNostr()
+  const { accounts, account, switchAccount, removeAccount } = useNostr()
   const [switchingAccount, setSwitchingAccount] = useState<TAccountPointer | null>(null)
 
   return (
@@ -37,17 +38,30 @@ export default function AccountList({
           }}
         >
           <div className="flex justify-between items-center p-2">
-            <div className="flex items-center gap-2 relative">
+            <div className="flex-1 flex items-center gap-2 relative">
               <SimpleUserAvatar userId={act.pubkey} />
-              <div>
-                <SimpleUsername userId={act.pubkey} className="font-semibold" />
+              <div className="flex-1 w-0">
+                <SimpleUsername userId={act.pubkey} className="font-semibold truncate" />
                 <div className="text-sm rounded-full bg-muted px-2 w-fit">
                   {formatPubkey(act.pubkey)}
                 </div>
               </div>
             </div>
-            <div className="flex gap-2 items-center">
-              <SignerTypeBadge signerType={act.signerType} />
+            <div className="flex items-center gap-2">
+              <div className="flex gap-2 items-center">
+                <SignerTypeBadge signerType={act.signerType} />
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  removeAccount(act)
+                }}
+              >
+                <Trash2 />
+              </Button>
             </div>
           </div>
           {switchingAccount && isSameAccount(act, switchingAccount) && (

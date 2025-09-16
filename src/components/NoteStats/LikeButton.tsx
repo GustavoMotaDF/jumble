@@ -4,11 +4,14 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useNoteStatsById } from '@/hooks/useNoteStatsById'
 import { createReactionDraftEvent } from '@/lib/draft-event'
-import { cn } from '@/lib/utils'
 import { useNostr } from '@/providers/NostrProvider'
-import { useNoteStats } from '@/providers/NoteStatsProvider'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
+import { useUserTrust } from '@/providers/UserTrustProvider'
+import client from '@/services/client.service'
+import noteStatsService from '@/services/note-stats.service'
+import { TEmoji } from '@/types'
 import { Loader, SmilePlus } from 'lucide-react'
 import { Event } from 'nostr-tools'
 import { useMemo, useState } from 'react'
@@ -16,37 +19,42 @@ import { useTranslation } from 'react-i18next'
 import Emoji from '../Emoji'
 import EmojiPicker from '../EmojiPicker'
 import SuggestedEmojis from '../SuggestedEmojis'
+import { formatCount } from './utils'
 
 export default function LikeButton({ event }: { event: Event }) {
   const { t } = useTranslation()
   const { isSmallScreen } = useScreenSize()
   const { pubkey, publish, checkLogin } = useNostr()
-  const { noteStatsMap, updateNoteStatsByEvents, fetchNoteStats } = useNoteStats()
+  const { hideUntrustedInteractions, isUserTrusted } = useUserTrust()
   const [liking, setLiking] = useState(false)
   const [isEmojiReactionsOpen, setIsEmojiReactionsOpen] = useState(false)
   const [isPickerOpen, setIsPickerOpen] = useState(false)
-  const myLastEmoji = useMemo(() => {
-    const stats = noteStatsMap.get(event.id) || {}
-    const like = stats.likes?.find((like) => like.pubkey === pubkey)
-    return like?.emoji
-  }, [noteStatsMap, event, pubkey])
+  const noteStats = useNoteStatsById(event.id)
+  const { myLastEmoji, likeCount } = useMemo(() => {
+    const stats = noteStats || {}
+    const myLike = stats.likes?.find((like) => like.pubkey === pubkey)
+    const likes = hideUntrustedInteractions
+      ? stats.likes?.filter((like) => isUserTrusted(like.pubkey))
+      : stats.likes
+    return { myLastEmoji: myLike?.emoji, likeCount: likes?.length }
+  }, [noteStats, pubkey, hideUntrustedInteractions])
 
-  const like = async (emoji: string) => {
+  const like = async (emoji: string | TEmoji) => {
     checkLogin(async () => {
       if (liking || !pubkey) return
 
       setLiking(true)
-      const timer = setTimeout(() => setLiking(false), 5000)
+      const timer = setTimeout(() => setLiking(false), 10_000)
 
       try {
-        const noteStats = noteStatsMap.get(event.id)
         if (!noteStats?.updatedAt) {
-          await fetchNoteStats(event)
+          await noteStatsService.fetchNoteStats(event, pubkey)
         }
 
         const reaction = createReactionDraftEvent(event, emoji)
-        const evt = await publish(reaction)
-        updateNoteStatsByEvents([evt])
+        const seenOn = client.getSeenEventRelayUrls(event.id)
+        const evt = await publish(reaction, { additionalRelayUrls: seenOn })
+        noteStatsService.updateNoteStatsByEvents([evt])
       } catch (error) {
         console.error('like failed', error)
       } finally {
@@ -58,10 +66,7 @@ export default function LikeButton({ event }: { event: Event }) {
 
   const trigger = (
     <button
-      className={cn(
-        'flex items-center enabled:hover:text-primary gap-1 px-3 h-full',
-        !myLastEmoji ? 'text-muted-foreground' : ''
-      )}
+      className="flex items-center enabled:hover:text-primary gap-1 px-3 h-full text-muted-foreground"
       title={t('Like')}
       onClick={() => {
         if (isSmallScreen) {
@@ -72,11 +77,15 @@ export default function LikeButton({ event }: { event: Event }) {
       {liking ? (
         <Loader className="animate-spin" />
       ) : myLastEmoji ? (
-        <div className="h-5 w-5 flex items-center justify-center">
-          <Emoji emoji={myLastEmoji} />
-        </div>
+        <>
+          <Emoji emoji={myLastEmoji} classNames={{ img: 'size-4' }} />
+          {!!likeCount && <div className="text-sm">{formatCount(likeCount)}</div>}
+        </>
       ) : (
-        <SmilePlus />
+        <>
+          <SmilePlus />
+          {!!likeCount && <div className="text-sm">{formatCount(likeCount)}</div>}
+        </>
       )}
     </button>
   )
@@ -89,9 +98,11 @@ export default function LikeButton({ event }: { event: Event }) {
           <DrawerOverlay onClick={() => setIsEmojiReactionsOpen(false)} />
           <DrawerContent hideOverlay>
             <EmojiPicker
-              onEmojiClick={(data) => {
+              onEmojiClick={(emoji) => {
                 setIsEmojiReactionsOpen(false)
-                like(data.emoji)
+                if (!emoji) return
+
+                like(emoji)
               }}
             />
           </DrawerContent>
@@ -114,10 +125,12 @@ export default function LikeButton({ event }: { event: Event }) {
       <DropdownMenuContent side="top" className="p-0 w-fit">
         {isPickerOpen ? (
           <EmojiPicker
-            onEmojiClick={(data, e) => {
+            onEmojiClick={(emoji, e) => {
               e.stopPropagation()
               setIsEmojiReactionsOpen(false)
-              like(data.emoji)
+              if (!emoji) return
+
+              like(emoji)
             }}
           />
         ) : (

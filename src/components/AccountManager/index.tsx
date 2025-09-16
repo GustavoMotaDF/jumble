@@ -1,14 +1,14 @@
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { isDevEnv } from '@/lib/common'
+import { isDevEnv } from '@/lib/utils'
 import { useNostr } from '@/providers/NostrProvider'
 import { useTheme } from '@/providers/ThemeProvider'
 import { NstartModal } from 'nstart-modal'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import AccountList from '../AccountList'
-import BunkerLogin from './BunkerLogin'
 import GenerateNewAccount from './GenerateNewAccount'
+import NostrConnectLogin from './NostrConnectionLogin'
 import NpubLogin from './NpubLogin'
 import PrivateKeyLogin from './PrivateKeyLogin'
 
@@ -22,7 +22,7 @@ export default function AccountManager({ close }: { close?: () => void }) {
       {page === 'nsec' ? (
         <PrivateKeyLogin back={() => setPage(null)} onLoginSuccess={() => close?.()} />
       ) : page === 'bunker' ? (
-        <BunkerLogin back={() => setPage(null)} onLoginSuccess={() => close?.()} />
+        <NostrConnectLogin back={() => setPage(null)} onLoginSuccess={() => close?.()} />
       ) : page === 'generate' ? (
         <GenerateNewAccount back={() => setPage(null)} onLoginSuccess={() => close?.()} />
       ) : page === 'npub' ? (

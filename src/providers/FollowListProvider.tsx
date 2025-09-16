@@ -1,7 +1,8 @@
 import { createFollowListDraftEvent } from '@/lib/draft-event'
-import { extractPubkeysFromEventTags } from '@/lib/tag'
+import { getPubkeysFromPTags } from '@/lib/tag'
 import client from '@/services/client.service'
 import { createContext, useContext, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNostr } from './NostrProvider'
 
 type TFollowListContext = {
@@ -21,9 +22,10 @@ export const useFollowList = () => {
 }
 
 export function FollowListProvider({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation()
   const { pubkey: accountPubkey, followListEvent, publish, updateFollowListEvent } = useNostr()
   const followings = useMemo(
-    () => (followListEvent ? extractPubkeysFromEventTags(followListEvent.tags) : []),
+    () => (followListEvent ? getPubkeysFromPTags(followListEvent.tags) : []),
     [followListEvent]
   )
 
@@ -31,6 +33,13 @@ export function FollowListProvider({ children }: { children: React.ReactNode }) 
     if (!accountPubkey) return
 
     const followListEvent = await client.fetchFollowListEvent(accountPubkey)
+    if (!followListEvent) {
+      const result = confirm(t('FollowListNotFoundConfirmation'))
+
+      if (!result) {
+        return
+      }
+    }
     const newFollowListDraftEvent = createFollowListDraftEvent(
       (followListEvent?.tags ?? []).concat([['p', pubkey]]),
       followListEvent?.content

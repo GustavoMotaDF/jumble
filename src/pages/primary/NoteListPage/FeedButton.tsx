@@ -34,7 +34,11 @@ export default function FeedButton({ className }: { className?: string }) {
       <PopoverTrigger asChild>
         <FeedSwitcherTrigger className={className} />
       </PopoverTrigger>
-      <PopoverContent side="bottom" className="w-96 p-4 max-h-[80vh] overflow-auto">
+      <PopoverContent
+        sideOffset={0}
+        side="bottom"
+        className="w-96 p-4 max-h-[80vh] overflow-auto scrollbar-hide"
+      >
         <FeedSwitcher close={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
@@ -66,11 +70,6 @@ const FeedSwitcherTrigger = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEle
       }
       if (feedInfo.feedType === 'relays') {
         return activeRelaySet?.name ?? activeRelaySet?.id
-      }
-      if (feedInfo.feedType === 'temporary') {
-        return relayUrls.length === 1
-          ? simplifyUrl(relayUrls[0])
-          : (activeRelaySet?.name ?? t('Temporary'))
       }
     }, [feedInfo, activeRelaySet])
 

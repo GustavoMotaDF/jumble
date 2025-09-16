@@ -3,11 +3,12 @@ import ProfileBanner from '@/components/ProfileBanner'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import SecondaryPageLayout from '@/layouts/SecondaryPageLayout'
-import { isEmail } from '@/lib/common'
 import { createProfileDraftEvent } from '@/lib/draft-event'
 import { generateImageByPubkey } from '@/lib/pubkey'
+import { isEmail } from '@/lib/utils'
 import { useSecondaryPage } from '@/PageManager'
 import { useNostr } from '@/providers/NostrProvider'
 import { Loader, Upload } from 'lucide-react'
@@ -22,6 +23,7 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
   const [avatar, setAvatar] = useState<string>('')
   const [username, setUsername] = useState<string>('')
   const [about, setAbout] = useState<string>('')
+  const [website, setWebsite] = useState<string>('')
   const [nip05, setNip05] = useState<string>('')
   const [nip05Error, setNip05Error] = useState<string>('')
   const [lightningAddress, setLightningAddress] = useState<string>('')
@@ -41,6 +43,7 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
       setAvatar(profile.avatar ?? '')
       setUsername(profile.original_username ?? '')
       setAbout(profile.about ?? '')
+      setWebsite(profile.website ?? '')
       setNip05(profile.nip05 ?? '')
       setLightningAddress(profile.lightningAddress || '')
     } else {
@@ -48,6 +51,7 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
       setAvatar('')
       setUsername('')
       setAbout('')
+      setWebsite('')
       setNip05('')
       setLightningAddress('')
     }
@@ -83,6 +87,7 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
       displayName: username,
       name: oldProfileContent.name ?? username,
       about,
+      website,
       nip05,
       banner,
       picture: avatar,
@@ -119,93 +124,102 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
 
   return (
     <SecondaryPageLayout ref={ref} index={index} title={profile.username} controls={controls}>
-      <div className="px-4">
-        <div className="relative bg-cover bg-center rounded-lg mb-2">
-          <Uploader
-            onUploadSuccess={onBannerUploadSuccess}
-            onUploadingChange={(uploading) => setTimeout(() => setUploadingBanner(uploading), 50)}
-            className="w-full relative cursor-pointer"
-          >
-            <ProfileBanner
-              banner={banner}
-              pubkey={account.pubkey}
-              className="w-full aspect-video object-cover rounded-lg"
-            />
-            <div className="absolute top-0 bg-muted/30 w-full h-full rounded-lg flex flex-col justify-center items-center">
-              {uploadingBanner ? (
-                <Loader size={36} className="animate-spin" />
-              ) : (
-                <Upload size={36} />
-              )}
-            </div>
-          </Uploader>
-          <Uploader
-            onUploadSuccess={onAvatarUploadSuccess}
-            onUploadingChange={(uploading) => setTimeout(() => setUploadingAvatar(uploading), 50)}
-            className="w-24 h-24 absolute bottom-0 left-4 translate-y-1/2 border-4 border-background cursor-pointer rounded-full"
-          >
-            <Avatar className="w-full h-full">
-              <AvatarImage src={avatar} className="object-cover object-center" />
-              <AvatarFallback>
-                <img src={defaultImage} />
-              </AvatarFallback>
-            </Avatar>
-            <div className="absolute top-0 bg-muted/30 w-full h-full rounded-full flex flex-col justify-center items-center">
-              {uploadingAvatar ? <Loader className="animate-spin" /> : <Upload />}
-            </div>
-          </Uploader>
-        </div>
-        <div className="pt-14 space-y-4">
-          <Item>
-            <ItemTitle>{t('Display Name')}</ItemTitle>
-            <Input
-              value={username}
-              onChange={(e) => {
-                setUsername(e.target.value)
-                setHasChanged(true)
-              }}
-            />
-          </Item>
-          <Item>
-            <ItemTitle>{t('Bio')}</ItemTitle>
-            <Textarea
-              className="h-44"
-              value={about}
-              onChange={(e) => {
-                setAbout(e.target.value)
-                setHasChanged(true)
-              }}
-            />
-          </Item>
-          <Item>
-            <ItemTitle>{t('Nostr Address (NIP-05)')}</ItemTitle>
-            <Input
-              value={nip05}
-              onChange={(e) => {
-                setNip05Error('')
-                setNip05(e.target.value)
-                setHasChanged(true)
-              }}
-              className={nip05Error ? 'border-destructive' : ''}
-            />
-            {nip05Error && <div className="text-xs text-destructive pl-3">{nip05Error}</div>}
-          </Item>
-          <Item>
-            <ItemTitle>{t('Lightning Address (or LNURL)')}</ItemTitle>
-            <Input
-              value={lightningAddress}
-              onChange={(e) => {
-                setLightningAddressError('')
-                setLightningAddress(e.target.value)
-                setHasChanged(true)
-              }}
-              className={lightningAddressError ? 'border-destructive' : ''}
-            />
-            {lightningAddressError && (
-              <div className="text-xs text-destructive pl-3">{lightningAddressError}</div>
-            )}
-          </Item>
-        </div>
+      <div className="relative bg-cover bg-center mb-2">
+        <Uploader
+          onUploadSuccess={onBannerUploadSuccess}
+          onUploadStart={() => setUploadingBanner(true)}
+          onUploadEnd={() => setUploadingBanner(false)}
+          className="w-full relative cursor-pointer"
+        >
+          <ProfileBanner banner={banner} pubkey={account.pubkey} className="w-full aspect-[3/1]" />
+          <div className="absolute top-0 bg-muted/30 w-full h-full flex flex-col justify-center items-center">
+            {uploadingBanner ? <Loader size={36} className="animate-spin" /> : <Upload size={36} />}
+          </div>
+        </Uploader>
+        <Uploader
+          onUploadSuccess={onAvatarUploadSuccess}
+          onUploadStart={() => setUploadingAvatar(true)}
+          onUploadEnd={() => setUploadingAvatar(false)}
+          className="w-24 h-24 absolute bottom-0 left-4 translate-y-1/2 border-4 border-background cursor-pointer rounded-full"
+        >
+          <Avatar className="w-full h-full">
+            <AvatarImage src={avatar} className="object-cover object-center" />
+            <AvatarFallback>
+              <img src={defaultImage} />
+            </AvatarFallback>
+          </Avatar>
+          <div className="absolute top-0 bg-muted/30 w-full h-full rounded-full flex flex-col justify-center items-center">
+            {uploadingAvatar ? <Loader className="animate-spin" /> : <Upload />}
+          </div>
+        </Uploader>
+      </div>
+      <div className="pt-14 px-4 flex flex-col gap-4">
+        <Item>
+          <Label htmlFor="profile-username-input">{t('Display Name')}</Label>
+          <Input
+            id="profile-username-input"
+            value={username}
+            onChange={(e) => {
+              setUsername(e.target.value)
+              setHasChanged(true)
+            }}
+          />
+        </Item>
+        <Item>
+          <Label htmlFor="profile-about-textarea">{t('Bio')}</Label>
+          <Textarea
+            id="profile-about-textarea"
+            className="h-44"
+            value={about}
+            onChange={(e) => {
+              setAbout(e.target.value)
+              setHasChanged(true)
+            }}
+          />
+        </Item>
+        <Item>
+          <Label htmlFor="profile-website-input">{t('Website')}</Label>
+          <Input
+            id="profile-website-input"
+            value={website}
+            onChange={(e) => {
+              setWebsite(e.target.value)
+              setHasChanged(true)
+            }}
+          />
+        </Item>
+        <Item>
+          <Label htmlFor="profile-nip05-input">{t('Nostr Address (NIP-05)')}</Label>
+          <Input
+            id="profile-nip05-input"
+            value={nip05}
+            onChange={(e) => {
+              setNip05Error('')
+              setNip05(e.target.value)
+              setHasChanged(true)
+            }}
+            className={nip05Error ? 'border-destructive' : ''}
+          />
+          {nip05Error && <div className="text-xs text-destructive pl-3">{nip05Error}</div>}
+        </Item>
+        <Item>
+          <Label htmlFor="profile-lightning-address-input">
+            {t('Lightning Address (or LNURL)')}
+          </Label>
+          <Input
+            id="profile-lightning-address-input"
+            value={lightningAddress}
+            onChange={(e) => {
+              setLightningAddressError('')
+              setLightningAddress(e.target.value)
+              setHasChanged(true)
+            }}
+            className={lightningAddressError ? 'border-destructive' : ''}
+          />
+          {lightningAddressError && (
+            <div className="text-xs text-destructive pl-3">{lightningAddressError}</div>
+          )}
+        </Item>
       </div>
     </SecondaryPageLayout>
   )
@@ -213,10 +227,6 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
 ProfileEditorPage.displayName = 'ProfileEditorPage'
 export default ProfileEditorPage
 
-function ItemTitle({ children }: { children: React.ReactNode }) {
-  return <div className="text-sm font-semibold text-muted-foreground">{children}</div>
-}
-
 function Item({ children }: { children: React.ReactNode }) {
-  return <div className="space-y-1">{children}</div>
+  return <div className="grid gap-2">{children}</div>
 }

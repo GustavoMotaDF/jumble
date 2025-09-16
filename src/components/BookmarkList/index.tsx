@@ -1,7 +1,6 @@
 import { useFetchEvent } from '@/hooks'
-import { generateEventIdFromETag } from '@/lib/tag'
+import { generateBech32IdFromATag, generateBech32IdFromETag } from '@/lib/tag'
 import { useNostr } from '@/providers/NostrProvider'
-import { kinds } from 'nostr-tools'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import NoteCard, { NoteCardLoadingSkeleton } from '../NoteCard'
@@ -16,8 +15,14 @@ export default function BookmarkList() {
 
     return (
       bookmarkListEvent.tags
-        .map((tag) => (tag[0] === 'e' ? generateEventIdFromETag(tag) : undefined))
-        .filter(Boolean) as `nevent1${string}`[]
+        .map((tag) =>
+          tag[0] === 'e'
+            ? generateBech32IdFromETag(tag)
+            : tag[0] === 'a'
+              ? generateBech32IdFromATag(tag)
+              : null
+        )
+        .filter(Boolean) as (`nevent1${string}` | `naddr1${string}`)[]
     ).reverse()
   }, [bookmarkListEvent])
   const [showCount, setShowCount] = useState(SHOW_COUNT)
@@ -71,7 +76,7 @@ export default function BookmarkList() {
 
       {showCount < eventIds.length ? (
         <div ref={bottomRef}>
-          <NoteCardLoadingSkeleton isPictures={false} />
+          <NoteCardLoadingSkeleton />
         </div>
       ) : (
         <div className="text-center text-sm text-muted-foreground mt-2">
@@ -86,10 +91,10 @@ function BookmarkedNote({ eventId }: { eventId: string }) {
   const { event, isFetching } = useFetchEvent(eventId)
 
   if (isFetching) {
-    return <NoteCardLoadingSkeleton isPictures={false} />
+    return <NoteCardLoadingSkeleton />
   }
 
-  if (!event || event.kind !== kinds.ShortTextNote) {
+  if (!event) {
     return null
   }
 

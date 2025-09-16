@@ -5,12 +5,24 @@ export function isWebsocketUrl(url: string): boolean {
 // copy from nostr-tools/utils
 export function normalizeUrl(url: string): string {
   try {
-    if (url.indexOf('://') === -1) url = 'wss://' + url
+    if (url.indexOf('://') === -1) {
+      if (url.startsWith('localhost:') || url.startsWith('localhost/')) {
+        url = 'ws://' + url
+      } else {
+        url = 'wss://' + url
+      }
+    }
     const p = new URL(url)
     p.pathname = p.pathname.replace(/\/+/g, '/')
     if (p.pathname.endsWith('/')) p.pathname = p.pathname.slice(0, -1)
-    if ((p.port === '80' && p.protocol === 'ws:') || (p.port === '443' && p.protocol === 'wss:'))
+    if (p.protocol === 'https:') {
+      p.protocol = 'wss:'
+    } else if (p.protocol === 'http:') {
+      p.protocol = 'ws:'
+    }
+    if ((p.port === '80' && p.protocol === 'ws:') || (p.port === '443' && p.protocol === 'wss:')) {
       p.port = ''
+    }
     p.searchParams.sort()
     p.hash = ''
     return p.toString()
@@ -26,17 +38,23 @@ export function normalizeHttpUrl(url: string): string {
     const p = new URL(url)
     p.pathname = p.pathname.replace(/\/+/g, '/')
     if (p.pathname.endsWith('/')) p.pathname = p.pathname.slice(0, -1)
+    if (p.protocol === 'wss:') {
+      p.protocol = 'https:'
+    } else if (p.protocol === 'ws:') {
+      p.protocol = 'http:'
+    }
     if (
       (p.port === '80' && p.protocol === 'http:') ||
       (p.port === '443' && p.protocol === 'https:')
-    )
+    ) {
       p.port = ''
+    }
     p.searchParams.sort()
     p.hash = ''
     return p.toString()
   } catch {
     console.error('Invalid URL:', url)
-    return url
+    return ''
   }
 }
 
@@ -99,10 +117,22 @@ export function isImage(url: string) {
   }
 }
 
-export function isVideo(url: string) {
+export function isMedia(url: string) {
   try {
-    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov']
-    return videoExtensions.some((ext) => new URL(url).pathname.toLowerCase().endsWith(ext))
+    const mediaExtensions = [
+      '.mp4',
+      '.webm',
+      '.ogg',
+      '.mov',
+      '.mp3',
+      '.wav',
+      '.flac',
+      '.aac',
+      '.m4a',
+      '.opus',
+      '.wma'
+    ]
+    return mediaExtensions.some((ext) => new URL(url).pathname.toLowerCase().endsWith(ext))
   } catch {
     return false
   }
